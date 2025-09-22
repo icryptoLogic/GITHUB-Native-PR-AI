@@ -1,1 +1,132 @@
+name: GitHub Native PR CI Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  pull_request_target:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    outputs:
+      risk_score: ${{ steps.metrics.outputs.risk_score }}
+      pipeline_success: ${{ steps.metrics.outputs.pipeline_success }}
+      avg_build_time: ${{ steps.metrics.outputs.avg_build_time }}
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - run: |
+          python -m pip install --upgrade pip
+          pip install pytest bandit jq
+
+      - name: Record start time
+        id: start
+        run: echo "start_time=$(date +%s)" >> $GITHUB_ENV
+
+      - name: Run Pytest
+        id: pytest
+        continue-on-error: true
+        run: |
+          pytest -q > pytest_results.txt
+          echo "pytest_exit=$?" >> $GITHUB_ENV
+
+      - name: Run Bandit (security scan)
+        id: bandit
+        continue-on-error: true
+        run: |
+          bandit -r src > bandit_report.txt || true
+          echo "bandit_exit=$?" >> $GITHUB_ENV
+
+      - name: Collect Metrics
+        id: metrics
+        run: |
+          end_time=$(date +%s)
+          build_time=$((end_time - $start_time))
+          build_min=$((build_time / 60))
+          build_sec=$((build_time % 60))
+
+          if [ "$pytest_exit" -eq 0 ] && [ "$bandit_exit" -eq 0 ]; then
+            success=100
+          elif [ "$pytest_exit" -eq 0 ] || [ "$bandit_exit" -eq 0 ]; then
+            success=50
+          else
+            success=0
+          fi
+
+          issues=$(grep -c "Issue:" bandit_report.txt || true)
+          tests_failed=$(grep -c "FAILED" pytest_results.txt || true)
+          risk=$(( (issues * 5) + (tests_failed * 10) ))
+          [ $risk -gt 100 ] && risk=100
+
+          echo "risk_score=$risk" >> $GITHUB_OUTPUT
+          echo "pipeline_success=$success" >> $GITHUB_OUTPUT
+          echo "avg_build_time=${build_min}m${build_sec}s" >> $GITHUB_OUTPUT
+
+  comment-metrics:
+    needs: build-test
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const risk = "${{needs.build-test.outputs.risk_score}}";
+            const success = "${{needs.build-test.outputs.pipeline_success}}";
+            const time = "${{needs.build-test.outputs.avg_build_time}}";
+            const body = `
+            ### 🚦 CI Metrics
+            | Metric | Value |
+            |--------|-------|
+            | Risk Score | ${risk} / 100 |
+            | Pipeline Success | ${success}% |
+            | Avg Build Time | ${time} |
+            `;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body
+            });
+
+  publish-dashboard:
+    needs: build-test
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Create PR Summary JSON
+        run: |
+          mkdir -p reports
+          cat <<EOF > reports/pr_summary_${{ github.event.pull_request.number }}.json
+          {
+            "pr_number": "${{ github.event.pull_request.number }}",
+            "title": "${{ github.event.pull_request.title }}",
+            "risk_score": "${{ needs.build-test.outputs.risk_score }}",
+            "pipeline_success": "${{ needs.build-test.outputs.pipeline_success }}",
+            "avg_build_time": "${{ needs.build-test.outputs.avg_build_time }}"
+          }
+          EOF
+
+      - name: Commit & Push Report
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git checkout -B reports
+          git add reports/
+          git commit -m "Add PR summary for #${{ github.event.pull_request.number }}"
+          git push origin reports --force
 
