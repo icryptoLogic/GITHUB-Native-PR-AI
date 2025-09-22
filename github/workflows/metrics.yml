@@ -1,0 +1,48 @@
+name: PR Metrics
+
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  metrics:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Save PR Metrics to JSON
+        run: |
+          mkdir -p docs
+          cat <<EOF > docs/dashboard.json
+          {
+            "id": "${{ github.event.pull_request.number }}",
+            "title": "${{ github.event.pull_request.title }}",
+            "author": "${{ github.event.pull_request.user.login }}",
+            "merged": "${{ github.event.pull_request.merged }}",
+            "additions": "${{ github.event.pull_request.additions }}",
+            "deletions": "${{ github.event.pull_request.deletions }}",
+            "changed_files": "${{ github.event.pull_request.changed_files }}"
+          }
+          EOF
+
+      - name: Save PR Metrics to Markdown
+        run: |
+          cat <<EOF > docs/dashboard.md
+          # 📊 GitHub Native Dashboard
+          - **PR ID**: ${{ github.event.pull_request.number }}
+          - **Title**: ${{ github.event.pull_request.title }}
+          - **Author**: @${{ github.event.pull_request.user.login }}
+          - **Merged**: ${{ github.event.pull_request.merged }}
+          - **Additions**: ${{ github.event.pull_request.additions }}
+          - **Deletions**: ${{ github.event.pull_request.deletions }}
+          - **Files Changed**: ${{ github.event.pull_request.changed_files }}
+          EOF
+
+      - name: Commit dashboard updates
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add docs/dashboard.*
+          git commit -m "Update dashboard with PR #${{ github.event.pull_request.number }}" || echo "No changes"
+          git push
