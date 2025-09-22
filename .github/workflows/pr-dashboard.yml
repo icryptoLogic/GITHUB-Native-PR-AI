@@ -1,0 +1,118 @@
+name: PR Dashboard
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  pr-dashboard:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest bandit flake8
+
+      - name: Run Pytest
+        id: tests
+        continue-on-error: true
+        run: |
+          pytest -q > pytest_results.txt
+          echo "exit_code=$?" >> $GITHUB_OUTPUT
+
+      - name: Run Bandit (security)
+        id: bandit
+        continue-on-error: true
+        run: |
+          bandit -r src > bandit_report.txt || true
+          echo "exit_code=$?" >> $GITHUB_OUTPUT
+
+      - name: Run Flake8 (lint)
+        id: lint
+        continue-on-error: true
+        run: |
+          flake8 src > lint_report.txt || true
+
+      - name: Compute Metrics
+        id: metrics
+        run: |
+          tests_failed=$(grep -c "FAILED" pytest_results.txt || true)
+          bandit_issues=$(grep -c "Issue:" bandit_report.txt || true)
+          risk=$(( (bandit_issues * 5) + (tests_failed * 10) ))
+          [ $risk -gt 100 ] && risk=100
+          echo "risk=$risk" >> $GITHUB_OUTPUT
+          echo "tests_failed=$tests_failed" >> $GITHUB_OUTPUT
+          echo "bandit_issues=$bandit_issues" >> $GITHUB_OUTPUT
+
+      - name: Post PR Dashboard Comment
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: "📊 GitHub Native Dashboard"
+          message: |
+            ### PR Summary
+            - **Title**: ${{ github.event.pull_request.title }}
+            - **Author**: @${{ github.event.pull_request.user.login }}
+            - **Files Changed**: ${{ github.event.pull_request.changed_files }}
+            - **Additions**: ${{ github.event.pull_request.additions }}
+            - **Deletions**: ${{ github.event.pull_request.deletions }}
+
+            ### Metrics
+            | Metric | Value |
+            |--------|-------|
+            | Risk Score | ${{ steps.metrics.outputs.risk }} / 100 |
+            | Bandit Issues | ${{ steps.metrics.outputs.bandit_issues }} |
+            | Tests Failed | ${{ steps.metrics.outputs.tests_failed }} |
+
+            ### Suggestions
+            ```text
+            $(cat lint_report.txt || echo "No lint issues 🎉")
+            ```
+
+      - name: Update dashboard files
+        if: github.event.pull_request.merged == true
+        run: |
+          mkdir -p docs
+          cat <<EOF > docs/dashboard.json
+          {
+            "id": "${{ github.event.pull_request.number }}",
+            "title": "${{ github.event.pull_request.title }}",
+            "author": "${{ github.event.pull_request.user.login }}",
+            "merged": "${{ github.event.pull_request.merged }}",
+            "additions": "${{ github.event.pull_request.additions }}",
+            "deletions": "${{ github.event.pull_request.deletions }}",
+            "changed_files": "${{ github.event.pull_request.changed_files }}",
+            "risk_score": "${{ steps.metrics.outputs.risk }}"
+          }
+          EOF
+
+          cat <<EOF > docs/dashboard.md
+          # 📊 GitHub Native Dashboard
+          - **PR ID**: #${{ github.event.pull_request.number }}
+          - **Title**: ${{ github.event.pull_request.title }}
+          - **Merged**: ${{ github.event.pull_request.merged }}
+          - **Additions**: ${{ github.event.pull_request.additions }}
+          - **Deletions**: ${{ github.event.pull_request.deletions }}
+          - **Risk Score**: ${{ steps.metrics.outputs.risk }}
+          EOF
+
+      - name: Commit & Push Dashboard
+        if: github.event.pull_request.merged == true
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add docs/dashboard.*
+          git commit -m "Update dashboard for PR #${{ github.event.pull_request.number }}" || echo "No changes"
+          git push
