@@ -81,46 +81,30 @@ jobs:
             $(cat lint_report.txt || echo "No lint issues 🎉")
             ```
 
-      - name: Update dashboard files
-        if: github.event.pull_request.merged == true
+      - name: Save PR summary JSON
         run: |
-          mkdir -p docs
-          cat <<EOF > docs/dashboard.json
+          mkdir -p reports
+          cat <<EOF > reports/pr_summary_${{ github.event.pull_request.number }}.json
           {
             "id": "${{ github.event.pull_request.number }}",
             "title": "${{ github.event.pull_request.title }}",
             "author": "${{ github.event.pull_request.user.login }}",
-            "merged": "${{ github.event.pull_request.merged }}",
             "additions": "${{ github.event.pull_request.additions }}",
             "deletions": "${{ github.event.pull_request.deletions }}",
             "changed_files": "${{ github.event.pull_request.changed_files }}",
-            "risk_score": "${{ steps.metrics.outputs.risk }}"
+            "risk": "${{ steps.metrics.outputs.risk }}",
+            "bandit": "${{ steps.metrics.outputs.bandit_issues }}",
+            "tests_failed": "${{ steps.metrics.outputs.tests_failed }}"
           }
           EOF
 
-          cat <<EOF > docs/dashboard.md
-          # 📊 GitHub Native Dashboard
-          - **PR ID**: #${{ github.event.pull_request.number }}
-          - **Title**: ${{ github.event.pull_request.title }}
-          - **Merged**: ${{ github.event.pull_request.merged }}
-          - **Additions**: ${{ github.event.pull_request.additions }}
-          - **Deletions**: ${{ github.event.pull_request.deletions }}
-          - **Risk Score**: ${{ steps.metrics.outputs.risk }}
-          EOF
+          cp reports/pr_summary_${{ github.event.pull_request.number }}.json reports/latest.json
 
-      - name: Commit & Push Dashboard
+      - name: Commit & Push report
         if: github.event.pull_request.merged == true
         run: |
-          git config user.name "github-actions"
-          git config user.email "actions@github.com"
-          git add docs/dashboard.*
-          git commit -m "Update dashboard for PR #${{ github.event.pull_request.number }}" || echo "No changes"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add reports/
+          git commit -m "Add report for PR #${{ github.event.pull_request.number }}" || echo "No changes"
           git push
-          
-       - name: Commit report
-  run: |
-    git config --global user.name "github-actions[bot]"
-    git config --global user.email "github-actions[bot]@users.noreply.github.com"
-    git add reports/
-    git commit -m "Add PR report for #${{ github.event.pull_request.number }}" || echo "No changes"
-    git push
