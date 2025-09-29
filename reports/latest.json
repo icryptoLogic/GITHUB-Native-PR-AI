@@ -2,9 +2,9 @@
   "id": "14",
   "title": "Update pr-dashboard.yml",
   "author": "icryptoLogic",
-  "additions": "6",
-  "deletions": "15",
-  "changed_files": "1",
+  "additions": "21",
+  "deletions": "19",
+  "changed_files": "3",
   "risk": "25",
   "bandit": "3",
   "tests_failed": "1"
