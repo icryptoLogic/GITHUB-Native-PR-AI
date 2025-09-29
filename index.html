@@ -59,15 +59,6 @@
       font-size: 0.9rem;
       opacity: 0.7;
     }
-    pre {
-      background:#1e293b;
-      padding:1rem;
-      border-radius:0.5rem;
-      overflow:auto;
-      max-height:200px;
-      margin-top:1rem;
-      font-size:0.9rem;
-    }
   </style>
 </head>
 <body>
@@ -75,27 +66,24 @@
 
   <div class="grid">
     <div class="card">
-      <h2>Pull Requests</h2>
-      <p id="prTitle">Loading…</p>
-      <a href="#" class="btn">View PRs</a>
+      <h2>Pull Request</h2>
+      <p><strong>Title:</strong> <span id="pr-title">Loading...</span></p>
+      <p><strong>Author:</strong> <span id="pr-author">Loading...</span></p>
+      <p><strong>Files Changed:</strong> <span id="files">Loading...</span></p>
+      <p><strong>Additions:</strong> <span id="additions">Loading...</span></p>
+      <p><strong>Deletions:</strong> <span id="deletions">Loading...</span></p>
     </div>
 
     <div class="card">
-      <h2>Lint & Checks</h2>
-      <p>Track lint results, CI checks, and warnings.</p>
-      <a href="#" class="btn">Run Checks</a>
+      <h2>Metrics</h2>
+      <p><strong>Risk Score:</strong> <span id="risk-score">Loading...</span></p>
+      <p><strong>Bandit Issues:</strong> <span id="bandit">Loading...</span></p>
+      <p><strong>Tests Failed:</strong> <span id="tests">Loading...</span></p>
     </div>
 
     <div class="card">
-      <h2>Auto Summary</h2>
-      <p id="summary">Waiting for data…</p>
-      <a href="#" class="btn">Generate</a>
-    </div>
-
-    <div class="card">
-      <h2>Settings</h2>
-      <p>Configure repo tokens, branches, and options.</p>
-      <a href="#" class="btn">Edit Settings</a>
+      <h2>Status</h2>
+      <p><strong>Merged:</strong> <span id="merged">Loading...</span></p>
     </div>
   </div>
 
@@ -104,21 +92,25 @@
   </footer>
 
   <script>
-    // 👇 CHANGE this to your actual repo path
-    const dataUrl = "https://icryptologic.github.io/GITHUB-Native-PR-AI/docs/dashboard.json";
+    async function loadMetrics() {
+      try {
+        const res = await fetch("https://icryptologic.github.io/AI-PR-AGENT-QODO-OS-WORKING/docs/dashboard.json");
+        const data = await res.json();
 
-    fetch(dataUrl)
-      .then(r => r.json())
-      .then(d => {
-        document.getElementById('prTitle').textContent =
-          `#${d.id} – ${d.title} (by @${d.author})`;
-        document.getElementById('summary').textContent =
-          `Merged: ${d.merged}, +${d.additions} / -${d.deletions}, Files: ${d.changed_files}`;
-      })
-      .catch(() => {
-        document.getElementById('prTitle').textContent = "⚠️ No data yet";
-        document.getElementById('summary').textContent = "Make sure workflow pushed dashboard.json";
-      });
+        document.getElementById("pr-title").innerText = data.title;
+        document.getElementById("pr-author").innerText = data.author;
+        document.getElementById("files").innerText = data.changed_files;
+        document.getElementById("additions").innerText = data.additions;
+        document.getElementById("deletions").innerText = data.deletions;
+        document.getElementById("risk-score").innerText = data.risk_score + " / 100";
+        document.getElementById("bandit").innerText = data.bandit_issues || 0;
+        document.getElementById("tests").innerText = data.tests_failed || 0;
+        document.getElementById("merged").innerText = data.merged;
+      } catch (err) {
+        console.error("Error loading metrics:", err);
+      }
+    }
+    loadMetrics();
   </script>
 </body>
 </html>
