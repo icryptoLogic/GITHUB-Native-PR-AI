@@ -43,16 +43,6 @@
       margin-bottom: 0.75rem;
       color: var(--accent);
     }
-    .btn {
-      display: inline-block;
-      background: var(--accent);
-      color: #000;
-      padding: 0.5rem 1rem;
-      border-radius: 0.5rem;
-      text-decoration: none;
-      margin-top: 0.75rem;
-      font-weight: 600;
-    }
     footer {
       text-align: center;
       margin-top: 2rem;
@@ -79,6 +69,7 @@
       <p><strong>Risk Score:</strong> <span id="risk-score">Loading...</span></p>
       <p><strong>Bandit Issues:</strong> <span id="bandit">Loading...</span></p>
       <p><strong>Tests Failed:</strong> <span id="tests">Loading...</span></p>
+      <p><strong>Duration:</strong> <span id="duration">Loading...</span></p>
     </div>
 
     <div class="card">
@@ -102,9 +93,12 @@
         document.getElementById("files").innerText = data.changed_files;
         document.getElementById("additions").innerText = data.additions;
         document.getElementById("deletions").innerText = data.deletions;
+
         document.getElementById("risk-score").innerText = data.risk_score + " / 100";
         document.getElementById("bandit").innerText = data.bandit_issues || 0;
         document.getElementById("tests").innerText = data.tests_failed || 0;
+        document.getElementById("duration").innerText = (data.duration_minutes || 0) + " min";
+
         document.getElementById("merged").innerText = data.merged;
       } catch (err) {
         console.error("Error loading metrics:", err);
