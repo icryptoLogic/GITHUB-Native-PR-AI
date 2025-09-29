@@ -15,6 +15,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.head_ref }}
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -27,24 +30,13 @@ jobs:
           pip install pytest bandit flake8
 
       - name: Run Pytest
-        id: tests
-        continue-on-error: true
-        run: |
-          pytest -q > pytest_results.txt
-          echo "exit_code=$?" >> $GITHUB_OUTPUT
+        run: pytest -q > pytest_results.txt || true
 
       - name: Run Bandit (security)
-        id: bandit
-        continue-on-error: true
-        run: |
-          bandit -r src > bandit_report.txt || true
-          echo "exit_code=$?" >> $GITHUB_OUTPUT
+        run: bandit -r src > bandit_report.txt || true
 
       - name: Run Flake8 (lint)
-        id: lint
-        continue-on-error: true
-        run: |
-          flake8 src > lint_report.txt || true
+        run: flake8 src > lint_report.txt || true
 
       - name: Compute Metrics
         id: metrics
@@ -101,7 +93,6 @@ jobs:
           cp reports/pr_summary_${{ github.event.pull_request.number }}.json reports/latest.json
 
       - name: Commit & Push report
-        if: github.event.pull_request.merged == true
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
