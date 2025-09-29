@@ -49,6 +49,16 @@ jobs:
           echo "tests_failed=$tests_failed" >> $GITHUB_OUTPUT
           echo "bandit_issues=$bandit_issues" >> $GITHUB_OUTPUT
 
+      - name: Compute PR Duration
+        id: duration
+        run: |
+          created=$(date -d "${{ github.event.pull_request.created_at }}" +%s)
+          # if closed, use closed_at; else fallback to updated_at
+          closed=$(date -d "${{ github.event.pull_request.closed_at || github.event.pull_request.updated_at }}" +%s)
+          duration=$(( (closed - created) / 60 ))
+          if [ $duration -lt 0 ]; then duration=0; fi
+          echo "duration=$duration" >> $GITHUB_OUTPUT
+
       - name: Post PR Dashboard Comment
         uses: marocchino/sticky-pull-request-comment@v2
         with:
@@ -67,6 +77,7 @@ jobs:
             | Risk Score | ${{ steps.metrics.outputs.risk }} / 100 |
             | Bandit Issues | ${{ steps.metrics.outputs.bandit_issues }} |
             | Tests Failed | ${{ steps.metrics.outputs.tests_failed }} |
+            | Duration (minutes) | ${{ steps.duration.outputs.duration }} |
 
             ### Suggestions
             ```text
@@ -84,9 +95,11 @@ jobs:
             "additions": "${{ github.event.pull_request.additions }}",
             "deletions": "${{ github.event.pull_request.deletions }}",
             "changed_files": "${{ github.event.pull_request.changed_files }}",
-            "risk": "${{ steps.metrics.outputs.risk }}",
-            "bandit": "${{ steps.metrics.outputs.bandit_issues }}",
-            "tests_failed": "${{ steps.metrics.outputs.tests_failed }}"
+            "risk_score": "${{ steps.metrics.outputs.risk }}",
+            "bandit_issues": "${{ steps.metrics.outputs.bandit_issues }}",
+            "tests_failed": "${{ steps.metrics.outputs.tests_failed }}",
+            "duration_minutes": "${{ steps.duration.outputs.duration }}",
+            "merged": "${{ github.event.pull_request.merged }}"
           }
           EOF
 
@@ -100,7 +113,6 @@ jobs:
           git commit -m "Add report for PR #${{ github.event.pull_request.number }}" || echo "No changes"
           git push
 
-      # ✅ New step to update dashboard.json
       - name: Update dashboard data
         run: |
           cp reports/latest.json docs/dashboard.json
