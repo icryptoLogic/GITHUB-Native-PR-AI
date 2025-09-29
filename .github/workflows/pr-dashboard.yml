@@ -80,16 +80,6 @@ jobs:
             ```text
             $(cat lint_report.txt || echo "No lint issues 🎉")
             ```
-      - name: Install GitHub CLI
-  run: sudo apt-get install gh -y
-
-- name: Auto Merge PR if low risk
-  if: ${{ fromJSON(steps.metrics.outputs.risk) <= 30 && github.event.pull_request.merged == false }}
-  env:
-    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  run: |
-    gh auth login --with-token <<< "$GITHUB_TOKEN"
-    gh pr merge ${{ github.event.pull_request.number }} --squash --auto
 
       - name: Save PR summary JSON
         run: |
