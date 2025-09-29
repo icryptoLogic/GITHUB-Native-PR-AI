@@ -100,12 +100,21 @@ jobs:
           git commit -m "Add report for PR #${{ github.event.pull_request.number }}" || echo "No changes"
           git push
 
-      # ✅ New step to update dashboard.json
+            # ✅ Update dashboard.json by appending new PR data
       - name: Update dashboard data
         run: |
-          cp reports/latest.json docs/dashboard.json
+          mkdir -p docs
+          # If dashboard.json exists, append new entry, else create with array
+          if [ -f docs/dashboard.json ]; then
+            jq ". + [$(cat reports/latest.json)]" docs/dashboard.json > docs/tmp.json
+            mv docs/tmp.json docs/dashboard.json
+          else
+            echo "[ $(cat reports/latest.json) ]" > docs/dashboard.json
+          fi
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add docs/dashboard.json
-          git commit -m "Update dashboard.json for PR #${{ github.event.pull_request.number }}" || echo "No changes"
+          git commit -m "Append PR #${{ github.event.pull_request.number }} to dashboard.json" || echo "No changes"
           git push
+
