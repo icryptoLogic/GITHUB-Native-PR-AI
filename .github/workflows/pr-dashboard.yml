@@ -72,6 +72,14 @@ jobs:
             ```text
             $(cat lint_report.txt || echo "No lint issues 🎉")
             ```
+      - name: Update dashboard data
+      run: |
+        cp reports/latest.json docs/dashboard.json
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git add docs/dashboard.json
+        git commit -m "Update dashboard data" || echo "No changes to commit"
+        git push
 
       - name: Save PR summary JSON
         run: |
