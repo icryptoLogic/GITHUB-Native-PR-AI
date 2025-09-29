@@ -94,20 +94,48 @@
   <script>
     async function loadMetrics() {
       try {
-        const res = await fetch("https://icryptologic.github.io/AI-PR-AGENT-QODO-OS-WORKING/docs/dashboard.json");
-        const data = await res.json();
+        // Corrected Fetch URL using the repository name
+        const correctUrl = "https://icryptologic.github.io/GITHUB-Native-PR-AI/docs/dashboard.json";
+        const res = await fetch(correctUrl);
+        
+        if (!res.ok) {
+          throw new Error(`HTTP error! status: ${res.status}`);
+        }
 
-        document.getElementById("pr-title").innerText = data.title;
-        document.getElementById("pr-author").innerText = data.author;
-        document.getElementById("files").innerText = data.changed_files;
-        document.getElementById("additions").innerText = data.additions;
-        document.getElementById("deletions").innerText = data.deletions;
-        document.getElementById("risk-score").innerText = data.risk_score + " / 100";
-        document.getElementById("bandit").innerText = data.bandit_issues || 0;
-        document.getElementById("tests").innerText = data.tests_failed || 0;
-        document.getElementById("merged").innerText = data.merged;
+        const dataArray = await res.json();
+
+        // Get the latest PR object (last element in the array)
+        if (!Array.isArray(dataArray) || dataArray.length === 0) {
+          console.warn("Dashboard data is empty or not an array.");
+          // Set placeholders if data is empty
+          document.querySelectorAll('.card span').forEach(el => el.innerText = 'N/A');
+          return;
+        }
+        const latestPR = dataArray[dataArray.length - 1]; 
+
+        // Populate the dashboard with the latest PR data
+        document.getElementById("pr-title").innerText = latestPR.title;
+        document.getElementById("pr-author").innerText = `@${latestPR.author}`;
+        document.getElementById("files").innerText = latestPR.changed_files;
+        document.getElementById("additions").innerText = latestPR.additions;
+        document.getElementById("deletions").innerText = latestPR.deletions;
+        
+        // Use the correct keys from your workflow: 'risk' and 'bandit'
+        document.getElementById("risk-score").innerText = latestPR.risk + " / 100"; 
+        document.getElementById("bandit").innerText = latestPR.bandit || 0; 
+        document.getElementById("tests").innerText = latestPR.tests_failed || 0;
+        
+        // 'merged' status is not in the current JSON data, setting a default
+        document.getElementById("merged").innerText = "Pending/N/A"; 
+
       } catch (err) {
         console.error("Error loading metrics:", err);
+        // Fallback in case of error
+        document.getElementById("pr-title").innerText = "Error Loading Data";
+        document.getElementById("risk-score").innerText = "N/A";
+        document.getElementById("bandit").innerText = "N/A";
+        document.getElementById("tests").innerText = "N/A";
+        document.getElementById("merged").innerText = "N/A";
       }
     }
     loadMetrics();
