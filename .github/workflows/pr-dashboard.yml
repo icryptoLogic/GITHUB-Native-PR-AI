@@ -108,3 +108,10 @@ jobs:
           git add reports/
           git commit -m "Add report for PR #${{ github.event.pull_request.number }}" || echo "No changes"
           git push
+
+        - name: Auto Merge PR if low risk
+        if: steps.metrics.outputs.risk <= 30 && github.event.pull_request.merged == false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr merge ${{ github.event.pull_request.number }} --squash --auto
