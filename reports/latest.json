@@ -2,9 +2,9 @@
   "id": "21",
   "title": "Update app.py",
   "author": "icryptoLogic",
-  "additions": "1",
-  "deletions": "1",
-  "changed_files": "1",
+  "additions": "14",
+  "deletions": "3",
+  "changed_files": "4",
   "risk": "25",
   "bandit": "3",
   "tests_failed": "1"
