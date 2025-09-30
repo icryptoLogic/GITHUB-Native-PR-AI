@@ -75,27 +75,31 @@
 
   <div class="grid">
     <div class="card">
-      <h2>Pull Requests</h2>
-      <p id="prTitle">Loading…</p>
-      <a href="#" class="btn">View PRs</a>
+      <h2>Latest PR Summary</h2>
+      <p id="prTitle">Loading...</p>
+      <p><strong>Author:</strong> <span id="prAuthor">Loading...</span></p>
+      <p><strong>Files/Changes:</strong> <span id="summary">Loading...</span></p>
+      <a href="#" id="prLink" class="btn" target="_blank">View PR</a>
     </div>
 
     <div class="card">
-      <h2>Lint & Checks</h2>
-      <p>Track lint results, CI checks, and warnings.</p>
-      <a href="#" class="btn">Run Checks</a>
+      <h2>Metrics</h2>
+      <p><strong>Risk Score:</strong> <span id="riskScore">Loading...</span></p>
+      <p><strong>Bandit Issues:</strong> <span id="banditIssues">Loading...</span></p>
+      <p><strong>Tests Failed:</strong> <span id="testsFailed">Loading...</span></p>
+      <a href="#" class="btn">View All Metrics</a>
     </div>
 
     <div class="card">
-      <h2>Auto Summary</h2>
-      <p id="summary">Waiting for data…</p>
-      <a href="#" class="btn">Generate</a>
+      <h2>Lint Status</h2>
+      <p id="lintStatus">Running checks...</p>
+      <a href="#" class="btn">View Report</a>
     </div>
 
     <div class="card">
-      <h2>Settings</h2>
-      <p>Configure repo tokens, branches, and options.</p>
-      <a href="#" class="btn">Edit Settings</a>
+      <h2>PR Status</h2>
+      <p><strong>Merged:</strong> <span id="mergedStatus">Pending/N/A</span></p>
+      <a href="#" class="btn">Monitor</a>
     </div>
   </div>
 
@@ -104,21 +108,55 @@
   </footer>
 
   <script>
-    // 👇 CHANGE this to your actual repo path
-    const dataUrl = "https://icryptologic.github.io/GITHUB-Native-PR-AI/docs/dashboard.json";
+    // Use relative path since index.html and dashboard.json should be in the same root folder (e.g., /docs)
+    const dataUrl = "./dashboard.json"; 
+    const repoBaseUrl = "https://github.com/icryptologic/GITHUB-Native-PR-AI/pull/";
 
-    fetch(dataUrl)
-      .then(r => r.json())
-      .then(d => {
-        document.getElementById('prTitle').textContent =
-          `#${d.id} – ${d.title} (by @${d.author})`;
-        document.getElementById('summary').textContent =
-          `Merged: ${d.merged}, +${d.additions} / -${d.deletions}, Files: ${d.changed_files}`;
-      })
-      .catch(() => {
-        document.getElementById('prTitle').textContent = "⚠️ No data yet";
-        document.getElementById('summary').textContent = "Make sure workflow pushed dashboard.json";
-      });
+    async function loadMetrics() {
+        try {
+            const res = await fetch(dataUrl);
+
+            if (!res.ok) {
+                throw new Error(`HTTP error! Status: ${res.status}`);
+            }
+
+            const dataArray = await res.json();
+
+            if (!Array.isArray(dataArray) || dataArray.length === 0) {
+                throw new Error("Data is empty or not an array.");
+            }
+
+            // Get the latest PR object (the last element in the array)
+            const latestPR = dataArray[dataArray.length - 1]; 
+
+            // Update Pull Request Details
+            document.getElementById('prTitle').textContent = `#${latestPR.id} – ${latestPR.title}`;
+            document.getElementById('prAuthor').textContent = `@${latestPR.author}`;
+            document.getElementById('summary').textContent = `${latestPR.changed_files} files changed, +${latestPR.additions} / -${latestPR.deletions}`;
+            document.getElementById('prLink').href = `${repoBaseUrl}${latestPR.id}`;
+
+            // Update Metrics (using correct keys: 'risk', 'bandit', 'tests_failed')
+            document.getElementById('riskScore').textContent = `${latestPR.risk} / 100`;
+            document.getElementById('banditIssues').textContent = latestPR.bandit || 0;
+            document.getElementById('testsFailed').textContent = latestPR.tests_failed || 0;
+            
+            // Set Lint/Status
+            document.getElementById('lintStatus').textContent = "Checks Complete ✅";
+            document.getElementById('mergedStatus').textContent = latestPR.merged || "Pending/N/A";
+
+        } catch (err) {
+            console.error("Error loading metrics:", err);
+            // Fallback for errors or missing data
+            document.getElementById('prTitle').textContent = "⚠️ Error fetching data";
+            document.getElementById('prAuthor').textContent = "N/A";
+            document.getElementById('summary').textContent = "Check GitHub Pages config and workflow logs.";
+            document.getElementById('riskScore').textContent = "N/A";
+            document.getElementById('banditIssues').textContent = "N/A";
+            document.getElementById('testsFailed').textContent = "N/A";
+        }
+    }
+    
+    loadMetrics();
   </script>
 </body>
 </html>
