@@ -2,9 +2,9 @@
   "id": "26",
   "title": "Update index.html",
   "author": "icryptoLogic",
-  "additions": "64",
-  "deletions": "26",
-  "changed_files": "1",
+  "additions": "79",
+  "deletions": "30",
+  "changed_files": "3",
   "risk": "25",
   "bandit": "3",
   "tests_failed": "1"
