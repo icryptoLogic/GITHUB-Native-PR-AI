@@ -74,10 +74,11 @@ jobs:
             $(cat lint_report.txt || echo "No lint issues 🎉")
             ```
 
+      # --- Save PR summary JSON in a temp dir (kept across checkouts) ---
       - name: Save PR summary JSON
         run: |
-          mkdir -p reports
-          cat <<EOF > reports/latest.json
+          mkdir -p /tmp/pr_reports
+          cat <<EOF > /tmp/pr_reports/latest.json
           {
             "id": "${{ github.event.pull_request.number }}",
             "title": "${{ github.event.pull_request.title }}",
@@ -104,7 +105,7 @@ jobs:
           if [ ! -f docs/dashboard.json ]; then
             echo "[]" > docs/dashboard.json
           fi
-          jq --slurpfile new_entry reports/latest.json '. + $new_entry' docs/dashboard.json > docs/tmp.json
+          jq --slurpfile new_entry /tmp/pr_reports/latest.json '. + $new_entry' docs/dashboard.json > docs/tmp.json
           mv docs/tmp.json docs/dashboard.json
 
       - name: Commit & Push dashboard.json
@@ -115,7 +116,7 @@ jobs:
           git commit -m "Append PR #${{ github.event.pull_request.number }} to dashboard.json" || echo "No changes"
           git push
           
- # --- Post Dashboard Link to PR ---
+      # --- Post Dashboard Link to PR ---
       - name: Comment Dashboard Link
         uses: marocchino/sticky-pull-request-comment@v2
         with:
