@@ -114,3 +114,12 @@ jobs:
           git add docs/dashboard.json
           git commit -m "Append PR #${{ github.event.pull_request.number }} to dashboard.json" || echo "No changes"
           git push
+          
+ # --- Post Dashboard Link to PR ---
+      - name: Comment Dashboard Link
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: "📊 Live Dashboard"
+          message: |
+            View full AI PR Agent Dashboard here:  
+            👉 https://icryptologic.github.io/GITHUB-Native-PR-AI/
