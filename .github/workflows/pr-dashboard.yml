@@ -119,7 +119,7 @@ jobs:
       - name: Comment Dashboard Link
         uses: marocchino/sticky-pull-request-comment@v2
         with:
-          header: "📊 Live Dashboard"
+          header: "📊 Test Live Dashboard"
           message: |
             View full AI PR Agent Dashboard here:  
             👉 https://icryptologic.github.io/GITHUB-Native-PR-AI/
