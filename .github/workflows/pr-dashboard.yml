@@ -2,12 +2,11 @@ name: PR Dashboard
 
 on:
   pull_request:
-    # Trigger on opened, updated, or closed
     types: [opened, synchronize, reopened, closed]
 
 permissions:
   contents: write
-  pull-requests: write # Required for commenting/data updating/auto-merge
+  pull-requests: write
 
 jobs:
   pr-dashboard:
@@ -47,18 +46,9 @@ jobs:
           bandit_issues=$(grep -c "Issue:" bandit_report.txt || true)
           risk=$(( (bandit_issues * 5) + (tests_failed * 10) ))
           [ $risk -gt 100 ] && risk=100
-          
-          # Set outputs for use in later steps
           echo "risk=$risk" >> $GITHUB_OUTPUT
           echo "tests_failed=$tests_failed" >> $GITHUB_OUTPUT
           echo "bandit_issues=$bandit_issues" >> $GITHUB_OUTPUT
-          
-          # ADDED: Conditional check for auto-merge (Risk <= 30)
-          if [ $risk -le 30 ]; then
-            echo "auto_merge_flag=true" >> $GITHUB_OUTPUT
-          else
-            echo "auto_merge_flag=false" >> $GITHUB_OUTPUT
-          fi
 
       - name: Post PR Dashboard Comment
         uses: marocchino/sticky-pull-request-comment@v2
@@ -83,9 +73,6 @@ jobs:
             ```text
             $(cat lint_report.txt || echo "No lint issues 🎉")
             ```
-            
-            **Auto-Merge Status:** ${{ steps.metrics.outputs.auto_merge_flag == 'true' && '🟢 Eligible for Auto-Merge' || '🔴 Requires Human Review (Risk > 30)' }}
-
 
       # --- Save PR summary JSON ---
       - name: Save PR summary JSON
@@ -103,8 +90,7 @@ jobs:
             "bandit": "${{ steps.metrics.outputs.bandit_issues }}",
             "tests_failed": "${{ steps.metrics.outputs.tests_failed }}",
             "state": "${{ github.event.pull_request.state }}",
-            "merged": "${{ github.event.pull_request.merged }}",
-            "auto_merged": "${{ steps.metrics.outputs.auto_merge_flag }}" # ADDED FIELD
+            "merged": "${{ github.event.pull_request.merged }}"
           }
           EOF
 
@@ -114,25 +100,21 @@ jobs:
         with:
           ref: main
 
-      - name: Update dashboard data (Ensuring Newest is first)
+      - name: Update dashboard data
         run: |
           mkdir -p docs
           if [ ! -f docs/dashboard.json ]; then
             echo "[]" > docs/dashboard.json
           fi
-
-          # Use jq to: 
-          # 1. Read the existing array and the new entry.
-          # 2. Filter out any existing entry with the same ID (deduplicate/update).
-          # 3. Add the new entry.
-          # 4. Sort the array in DESCENDING order (newest ID first) and save.
+          # Remove old entry for this PR ID
           jq --slurpfile new_entry /tmp/pr_reports/latest.json '
-            (map(select(.id != $new_entry[0].id))) + $new_entry
-            | sort_by(.id | tonumber) | reverse
+            (map(select(.id != $new_entry[0].id))) as $existing
+            | if $new_entry[0].state == "closed" and $new_entry[0].merged == "false"
+              then $existing   # exclude closed/unmerged PRs
+              else $existing + $new_entry
+              end
           ' docs/dashboard.json > docs/tmp.json
-
           mv docs/tmp.json docs/dashboard.json
-
 
       - name: Commit & Push dashboard.json
         run: |
@@ -150,14 +132,3 @@ jobs:
           message: |
             View full AI PR Agent Dashboard here:  
             👉 https://icryptologic.github.io/GITHUB-Native-PR-AI/
-            
-      # --- Conditional Auto Merge (ADDED) ---
-      - name: Conditional Auto Merge
-        if: github.event.pull_request.state == 'open' && steps.metrics.outputs.auto_merge_flag == 'true'
-        uses: pascalgn/automerge-action@v0.15.2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          merge_method: 'squash' 
-          pull_request: ${{ github.event.pull_request.number }}
-          allowed_statuses: 'success, neutral'
