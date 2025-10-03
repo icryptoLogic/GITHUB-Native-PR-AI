@@ -174,7 +174,7 @@
     "risk": "25",
     "bandit": "3",
     "tests_failed": "1",
-    "state": "open",
-    "merged": "false"
+    "state": "closed",
+    "merged": "true"
   }
 ]
