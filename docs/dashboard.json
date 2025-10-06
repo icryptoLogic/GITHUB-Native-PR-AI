@@ -241,5 +241,18 @@
     "tests_failed": "1",
     "state": "open",
     "merged": "false"
+  },
+  {
+    "id": "49",
+    "title": "Update index.html",
+    "author": "icryptoLogic",
+    "additions": "17",
+    "deletions": "14",
+    "changed_files": "1",
+    "risk": "25",
+    "bandit": "3",
+    "tests_failed": "1",
+    "state": "open",
+    "merged": "false"
   }
 ]
