@@ -267,5 +267,18 @@
     "tests_failed": "1",
     "state": "open",
     "merged": "false"
+  },
+  {
+    "id": "51",
+    "title": "Update app.py",
+    "author": "icryptoLogic",
+    "additions": "1",
+    "deletions": "1",
+    "changed_files": "1",
+    "risk": "25",
+    "bandit": "3",
+    "tests_failed": "1",
+    "state": "open",
+    "merged": "false"
   }
 ]
