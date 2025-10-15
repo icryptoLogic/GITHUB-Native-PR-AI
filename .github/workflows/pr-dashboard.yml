@@ -19,7 +19,6 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.head_ref }}
 
-      # --- Run tests & static checks ---
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
@@ -50,34 +49,10 @@ jobs:
           echo "tests_failed=$tests_failed" >> $GITHUB_OUTPUT
           echo "bandit_issues=$bandit_issues" >> $GITHUB_OUTPUT
 
-      - name: Post PR Dashboard Comment
-        uses: marocchino/sticky-pull-request-comment@v2
-        with:
-          header: "📊 GitHub Native Dashboard"
-          message: |
-            ### PR Summary
-            - **Title**: ${{ github.event.pull_request.title }}
-            - **Author**: @${{ github.event.pull_request.user.login }}
-            - **Files Changed**: ${{ github.event.pull_request.changed_files }}
-            - **Additions**: ${{ github.event.pull_request.additions }}
-            - **Deletions**: ${{ github.event.pull_request.deletions }}
-
-            ### Metrics
-            | Metric | Value |
-            |--------|-------|
-            | Risk Score | ${{ steps.metrics.outputs.risk }} / 100 |
-            | Bandit Issues | ${{ steps.metrics.outputs.bandit_issues }} |
-            | Tests Failed | ${{ steps.metrics.outputs.tests_failed }} |
-
-            ### Suggestions
-            ```text
-            $(cat lint_report.txt || echo "No lint issues 🎉")
-            ```
-
-      # --- Save PR summary JSON ---
-      - name: Save PR summary JSON
+      - name: Create PR Summary JSON
         run: |
           mkdir -p /tmp/pr_reports
+          timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           cat <<EOF > /tmp/pr_reports/latest.json
           {
             "id": "${{ github.event.pull_request.number }}",
@@ -90,12 +65,12 @@ jobs:
             "bandit": "${{ steps.metrics.outputs.bandit_issues }}",
             "tests_failed": "${{ steps.metrics.outputs.tests_failed }}",
             "state": "${{ github.event.pull_request.state }}",
-            "merged": "${{ github.event.pull_request.merged }}"
+            "merged": "${{ github.event.pull_request.merged }}",
+            "timestamp": "$timestamp"
           }
           EOF
 
-      # --- Switch to main to update dashboard.json ---
-      - name: Checkout main branch
+      - name: Checkout main
         uses: actions/checkout@v4
         with:
           ref: main
@@ -106,13 +81,9 @@ jobs:
           if [ ! -f docs/dashboard.json ]; then
             echo "[]" > docs/dashboard.json
           fi
-          # Remove old entry for this PR ID
           jq --slurpfile new_entry /tmp/pr_reports/latest.json '
             (map(select(.id != $new_entry[0].id))) as $existing
-            | if $new_entry[0].state == "closed" and $new_entry[0].merged == "false"
-              then $existing   # exclude closed/unmerged PRs
-              else $existing + $new_entry
-              end
+            | $existing + $new_entry
           ' docs/dashboard.json > docs/tmp.json
           mv docs/tmp.json docs/dashboard.json
 
@@ -121,14 +92,25 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add docs/dashboard.json
-          git commit -m "Update dashboard with PR #${{ github.event.pull_request.number }}" || echo "No changes"
+          git commit -m "Update dashboard for PR #${{ github.event.pull_request.number }}" || echo "No changes"
           git push
 
-      # --- Post Dashboard Link to PR ---
-      - name: Comment Dashboard Link
+      - name: Post Inline Dashboard Summary
         uses: marocchino/sticky-pull-request-comment@v2
         with:
-          header: "📊 Live Dashboard"
+          header: "📊 AI PR Dashboard Summary"
           message: |
-            View full AI PR Agent Dashboard here:  
-            👉 https://icryptologic.github.io/GITHUB-Native-PR-AI/
+            ### 🧠 Summary for PR #${{ github.event.pull_request.number }}
+            - **Title:** ${{ github.event.pull_request.title }}
+            - **Author:** @${{ github.event.pull_request.user.login }}
+            - **Files Changed:** ${{ github.event.pull_request.changed_files }}
+            - **Additions/Deletions:** +${{ github.event.pull_request.additions }} / -${{ github.event.pull_request.deletions }}
+
+            ### ⚙️ Metrics
+            | Metric | Value |
+            |:-------|------:|
+            | Risk Score | ${{ steps.metrics.outputs.risk }} / 100 |
+            | Bandit Issues | ${{ steps.metrics.outputs.bandit_issues }} |
+            | Tests Failed | ${{ steps.metrics.outputs.tests_failed }} |
+
+            ### 🔗 [Open Live Dashboard](https://icryptologic.github.io/GITHUB-Native-PR-AI/?t=${{ github.run_id }})
