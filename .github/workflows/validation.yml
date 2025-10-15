@@ -1,0 +1,127 @@
+name: PR Dashboard
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  pr-dashboard:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.head_ref }}
+
+      # --- Run tests & static checks ---
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest bandit flake8
+
+      - name: Run Pytest
+        run: pytest -q > pytest_results.txt || true
+
+      - name: Run Bandit (security)
+        run: bandit -r src > bandit_report.txt || true
+
+      - name: Run Flake8 (lint)
+        run: flake8 src > lint_report.txt || true
+
+      - name: Compute Metrics
+        id: metrics
+        run: |
+          tests_failed=$(grep -c "FAILED" pytest_results.txt || true)
+          bandit_issues=$(grep -c "Issue:" bandit_report.txt || true)
+          risk=$(( (bandit_issues * 5) + (tests_failed * 10) ))
+          [ $risk -gt 100 ] && risk=100
+          echo "risk=$risk" >> $GITHUB_OUTPUT
+          echo "tests_failed=$tests_failed" >> $GITHUB_OUTPUT
+          echo "bandit_issues=$bandit_issues" >> $GITHUB_OUTPUT
+
+      # --- PR Summary Comment ---
+      - name: Post PR Dashboard Comment
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: "📊 GitHub Native Dashboard"
+          recreate: true   # 👈 ensures comment updates, not duplicates
+          message: |
+            ### PR Summary
+            - **Title**: ${{ github.event.pull_request.title }}
+            - **Author**: @${{ github.event.pull_request.user.login }}
+            - **Files Changed**: ${{ github.event.pull_request.changed_files }}
+            - **Additions**: ${{ github.event.pull_request.additions }}
+            - **Deletions**: ${{ github.event.pull_request.deletions }}
+
+            ### Metrics
+            | Metric | Value |
+            |--------|-------|
+            | Risk Score | ${{ steps.metrics.outputs.risk }} / 100 |
+            | Bandit Issues | ${{ steps.metrics.outputs.bandit_issues }} |
+            | Tests Failed | ${{ steps.metrics.outputs.tests_failed }} |
+
+      # --- Save PR summary JSON ---
+      - name: Save PR summary JSON
+        run: |
+          mkdir -p /tmp/pr_reports
+          cat <<EOF > /tmp/pr_reports/latest.json
+          {
+            "id": "${{ github.event.pull_request.number }}",
+            "title": "${{ github.event.pull_request.title }}",
+            "author": "${{ github.event.pull_request.user.login }}",
+            "additions": "${{ github.event.pull_request.additions }}",
+            "deletions": "${{ github.event.pull_request.deletions }}",
+            "changed_files": "${{ github.event.pull_request.changed_files }}",
+            "risk": "${{ steps.metrics.outputs.risk }}",
+            "bandit": "${{ steps.metrics.outputs.bandit_issues }}",
+            "tests_failed": "${{ steps.metrics.outputs.tests_failed }}",
+            "state": "${{ github.event.pull_request.state }}",
+            "merged": "${{ github.event.pull_request.merged }}"
+          }
+          EOF
+
+      # --- Update dashboard.json on main ---
+      - name: Checkout main branch
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Update dashboard data
+        run: |
+          mkdir -p docs
+          if [ ! -f docs/dashboard.json ]; then
+            echo "[]" > docs/dashboard.json
+          fi
+          jq --slurpfile new_entry /tmp/pr_reports/latest.json '
+            (map(select(.id != $new_entry[0].id))) as $existing
+            | $existing + $new_entry
+          ' docs/dashboard.json > docs/tmp.json
+          mv docs/tmp.json docs/dashboard.json
+
+      - name: Commit & Push dashboard.json
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/dashboard.json
+          git commit -m "Update dashboard with PR #${{ github.event.pull_request.number }}" || echo "No changes"
+          git push
+
+      - name: Comment Dashboard Link
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: "📊 Live Dashboard"
+          recreate: true
+          message: |
+            View full AI PR Dashboard here:  
+            👉 https://icryptologic.github.io/GITHUB-Native-PR-AI/
