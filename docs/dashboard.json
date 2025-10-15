@@ -331,5 +331,18 @@
     "state": "open",
     "merged": "false",
     "timestamp": "2025-10-15T10:33:26Z"
+  },
+  {
+    "id": "54",
+    "title": "Update pr-dashboard.yml",
+    "author": "icryptoLogic",
+    "additions": "1",
+    "deletions": "0",
+    "changed_files": "1",
+    "risk": "25",
+    "bandit": "3",
+    "tests_failed": "1",
+    "state": "open",
+    "merged": "false"
   }
 ]
