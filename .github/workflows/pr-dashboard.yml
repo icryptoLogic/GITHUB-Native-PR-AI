@@ -1,236 +1,124 @@
-name: PR Metrics Dashboard
+name: PR Dashboard
 
 on:
-pull_request:
-# 'synchronize' is the key event that handles new commits pushed to an open PR branch.
-types: [opened, synchronize, reopened, closed]
-
-Trigger on push to main branch to enforce PR rule
-push:
-branches:
-- main
-- master
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
 
 permissions:
-contents: write
-pull-requests: write
-id-token: write
+  contents: write
+  pull-requests: write
 
 jobs:
+  pr-dashboard:
+    runs-on: ubuntu-latest
 
-----------------------------------------------------------------------------------
-1. JOB: Prevents direct push to main and opens a PR instead.
-----------------------------------------------------------------------------------
-prevent_direct_push:
-name: Enforce PR for Main Branch
-runs-on: ubuntu-latest
-if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.head_ref }}
 
-steps:
-  - name: Check for direct user push
-    id: check_push
-    run: |
-      # The system user 'github-actions[bot]' is allowed to push (for dashboard updates).
-      # Any other user should trigger the PR enforcement.
-      if [[ "${{ github.actor }}" == "github-actions[bot]" ]]; then
-        echo "::notice title=Skipping Push Enforcement::Push was made by the bot for dashboard update. Allowing."
-        echo "is_user_push=false" >> $GITHUB_OUTPUT
-      else
-        echo "::warning title=Direct Push Detected::User push detected on main branch. Starting PR creation process."
-        echo "is_user_push=true" >> $GITHUB_OUTPUT
-      fi
+      # --- Run tests & static checks ---
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
 
-  - name: Setup GitHub CLI
-    if: steps.check_push.outputs.is_user_push == 'true'
-    uses: actions/setup-gh@v2
-    with:
-      version: 2.x
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest bandit flake8
 
-  - name: Create PR from direct push
-    if: steps.check_push.outputs.is_user_push == 'true'
-    run: |
-      # 1. Checkout the main branch
-      git clone --single-branch --branch ${{ github.ref_name }} https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git repo_clone
-      cd repo_clone
+      - name: Run Pytest
+        run: pytest -q > pytest_results.txt || true
 
-      # 2. Create a new branch name (based on the commit SHA)
-      NEW_BRANCH="pr-enforcement/${{ github.sha }}"
-      
-      # 3. Create the new branch from the head of the push
-      git branch $NEW_BRANCH ${{ github.sha }}
-      
-      # 4. Push the new branch that contains the changes
-      git push origin $NEW_BRANCH
-      
-      # 5. Open a Pull Request using the GitHub CLI
-      gh pr create --base ${{ github.ref_name }} --head $NEW_BRANCH \
-        --title "WIP: Enforced PR for Direct Commit by @${{ github.actor }}" \
-        --body "This Pull Request was automatically generated because a user pushed directly to the \`${{ github.ref_name }}\` branch. Please review and merge."
-    
-    env:
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      
-  - name: Fail if direct push occurred
-    if: steps.check_push.outputs.is_user_push == 'true'
-    run: |
-      echo "::error title=Action Required::Direct push to main is forbidden. A PR has been opened for your commit: ${{ github.sha }}. Please use the PR for review."
-      exit 1
+      - name: Run Bandit (security)
+        run: bandit -r src > bandit_report.txt || true
 
-----------------------------------------------------------------------------------
-2. JOB: Runs for ALL Pull Requests
-----------------------------------------------------------------------------------
-pr-dashboard:
-if: github.event_name == 'pull_request'
-runs-on: ubuntu-latest
+      - name: Run Flake8 (lint)
+        run: flake8 src > lint_report.txt || true
 
-steps:
-  - name: Checkout PR branch
-    uses: actions/checkout@v4
-    with:
-      fetch-depth: 0
-      ref: ${{ github.head_ref }}
+      - name: Compute Metrics
+        id: metrics
+        run: |
+          tests_failed=$(grep -c "FAILED" pytest_results.txt || true)
+          bandit_issues=$(grep -c "Issue:" bandit_report.txt || true)
+          risk=$(( (bandit_issues * 5) + (tests_failed * 10) ))
+          [ $risk -gt 100 ] && risk=100
+          echo "risk=$risk" >> $GITHUB_OUTPUT
+          echo "tests_failed=$tests_failed" >> $GITHUB_OUTPUT
+          echo "bandit_issues=$bandit_issues" >> $GITHUB_OUTPUT
 
-  # --- Run tests & static checks ---
-  - name: Set up Python
-    uses: actions/setup-python@v4
-    with:
-      python-version: '3.11'
+      - name: Post PR Dashboard Comment
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: "📊 GitHub Native Dashboard"
+          message: |
+            ### PR Summary
+            - **Title**: ${{ github.event.pull_request.title }}
+            - **Author**: @${{ github.event.pull_request.user.login }}
+            - **Files Changed**: ${{ github.event.pull_request.changed_files }}
+            - **Additions**: ${{ github.event.pull_request.additions }}
+            - **Deletions**: ${{ github.event.pull_request.deletions }}
 
-  - name: Install dependencies & JQ
-    run: |
-      sudo apt-get install jq
-      python -m pip install --upgrade pip
-      pip install pytest bandit flake8
+            ### Metrics
+            | Metric | Value |
+            |--------|-------|
+            | Risk Score | ${{ steps.metrics.outputs.risk }} / 100 |
+            | Bandit Issues | ${{ steps.metrics.outputs.bandit_issues }} |
+            | Tests Failed | ${{ steps.metrics.outputs.tests_failed }} |
 
-  - name: Run Pytest
-    run: pytest -q > pytest_results.txt || true
+      # --- Save PR summary JSON ---
+      - name: Save PR summary JSON
+        run: |
+          mkdir -p /tmp/pr_reports
+          cat <<EOF > /tmp/pr_reports/latest.json
+          {
+            "id": "${{ github.event.pull_request.number }}",
+            "title": "${{ github.event.pull_request.title }}",
+            "author": "${{ github.event.pull_request.user.login }}",
+            "additions": "${{ github.event.pull_request.additions }}",
+            "deletions": "${{ github.event.pull_request.deletions }}",
+            "changed_files": "${{ github.event.pull_request.changed_files }}",
+            "risk": "${{ steps.metrics.outputs.risk }}",
+            "bandit": "${{ steps.metrics.outputs.bandit_issues }}",
+            "tests_failed": "${{ steps.metrics.outputs.tests_failed }}",
+            "state": "${{ github.event.pull_request.state }}",
+            "merged": "${{ github.event.pull_request.merged }}"
+          }
+          EOF
 
-  - name: Run Bandit (security)
-    run: bandit -r src > bandit_report.txt || true
+      - name: Checkout main branch
+        uses: actions/checkout@v4
+        with:
+          ref: main
 
-  - name: Run Flake8 (lint)
-    run: flake8 src > lint_report.txt || true
+      - name: Update dashboard data
+        run: |
+          mkdir -p docs
+          if [ ! -f docs/dashboard.json ]; then
+            echo "[]" > docs/dashboard.json
+          fi
+          jq --slurpfile new_entry /tmp/pr_reports/latest.json '
+            (map(select(.id != $new_entry[0].id))) as $existing
+            | $existing + $new_entry
+          ' docs/dashboard.json > docs/tmp.json
+          mv docs/tmp.json docs/dashboard.json
 
-  - name: Compute Metrics and Metadata
-    id: metrics
-    run: |
-      # METRICS
-      tests_failed=$(grep -c "FAILED" pytest_results.txt || true)
-      bandit_issues=$(grep -c "Issue:" bandit_report.txt || true)
-      risk=$(( (bandit_issues * 5) + (tests_failed * 10) ))
-      [ $risk -gt 100 ] && risk=100
+      - name: Commit & Push dashboard.json
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/dashboard.json
+          git commit -m "Update dashboard with PR #${{ github.event.pull_request.number }}" || echo "No changes"
+          git push
 
-      # TIMESTAMP (NEW)
-      CURRENT_TIME=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
-      
-      echo "risk=$risk" >> $GITHUB_OUTPUT
-      echo "tests_failed=$tests_failed" >> $GITHUB_OUTPUT
-      echo "bandit_issues=$bandit_issues" >> $GITHUB_OUTPUT
-      echo "current_time=$CURRENT_TIME" >> $GITHUB_OUTPUT # Export timestamp
-
-    shell: bash
-
-  - name: Post PR Dashboard Comment
-    uses: marocchino/sticky-pull-request-comment@v2
-    with:
-      header: "📊 AI PR Metrics Summary"
-      # NEW, IMPROVED MARKDOWN FORMATTING
-      message: |
-        ## 🚀 Pull Request Analysis
-        
-        This report reflects the current state of the Pull Request, run at **${{ steps.metrics.outputs.current_time }} UTC**.
-        
-        ---
-        
-        ### ℹ️ PR Summary
-        
-        | Detail | Value |
-        | :--- | :--- |
-        | **PR:** | **[#${{ github.event.pull_request.number }} - ${{ github.event.pull_request.title }}](${{ github.event.pull_request.html_url }})** |
-        | **Author:** | @${{ github.event.pull_request.user.login }} |
-        | **Files Changed:** | ${{ github.event.pull_request.changed_files }} |
-        | **Lines Changed:** | `+${{ github.event.pull_request.additions }}` / `-${{ github.event.pull_request.deletions }}` |
-        
-        ---
-        
-        ### 📈 Metrics & Risk Assessment
-        
-        | Metric | Value | Status |
-        | :--- | :--- | :--- |
-        | **Risk Score** | **${{ steps.metrics.outputs.risk }} / 100** | ${{ steps.metrics.outputs.risk > 50 && '🔴 High Risk' || steps.metrics.outputs.risk > 20 && '🟡 Moderate Risk' || '🟢 Low Risk' }} |
-        | **Bandit Issues** | ${{ steps.metrics.outputs.bandit_issues }} | 🛡️ Security Check |
-        | **Tests Failed** | ${{ steps.metrics.outputs.tests_failed }} | ❌ Reliability Check |
-        
-        ---
-        
-        ### 🏁 PR Status
-        
-        - **Current State:** `${{ github.event.pull_request.state }}`
-        - **Merged:** **${{ github.event.pull_request.merged }}**
-        
-        ---
-        
-        ### 💡 Linting Suggestions (Flake8)
-        
-        \`\`\`bash
-        # Full report contents:
-        cat lint_report.txt || echo "✅ No linting issues found."
-        \`\`\`
-
-  # --- Save PR summary JSON ---
-  - name: Save PR summary JSON
-    run: |
-      mkdir -p /tmp/pr_reports
-      cat <<EOF > /tmp/pr_reports/latest.json
-      {
-        "id": "${{ github.event.pull_request.number }}",
-        "title": "${{ github.event.pull_request.title }}",
-        "author": "${{ github.event.pull_request.user.login }}",
-        "additions": "${{ github.event.pull_request.additions }}",
-        "deletions": "${{ github.event.pull_request.deletions }}",
-        "changed_files": "${{ github.event.pull_request.changed_files }}",
-        "risk": "${{ steps.metrics.outputs.risk }}",
-        "bandit": "${{ steps.metrics.outputs.bandit_issues }}",
-        "tests_failed": "${{ steps.metrics.outputs.tests_failed }}",
-        "state": "${{ github.event.pull_request.state }}",
-        "merged": "${{ github.event.pull_request.merged }}",
-        "timestamp": "${{ steps.metrics.outputs.current_time }}"
-      }
-      EOF
-
-  - name: Checkout main branch
-    uses: actions/checkout@v4
-    with:
-      ref: main
-
-  - name: Update dashboard data (FIXED LOGIC)
-    run: |
-      mkdir -p docs
-      if [ ! -f docs/dashboard.json ]; then
-        echo "[]" > docs/dashboard.json
-      fi
-      
-      # This logic removes the old entry and appends the new one
-      jq --slurpfile new_entry /tmp/pr_reports/latest.json '
-        ($new_entry[0].id) as $new_id
-        | (map(select(.id != $new_id)) | unique) as $existing
-        | $existing + $new_entry
-        ' docs/dashboard.json > docs/tmp.json
-      mv docs/tmp.json docs/dashboard.json
-
-  - name: Commit & Push dashboard.json
-    run: |
-      git config user.name "github-actions[bot]"
-      git config user.email "github-actions[bot]@users.noreply.github.com"
-      git add docs/dashboard.json
-      git commit -m "Update dashboard with PR #${{ github.event.pull_request.number }} metrics" || echo "No changes to commit"
-      git push
-
-  - name: Comment Dashboard Link
-    uses: marocchino/sticky-pull-request-comment@v2
-    with:
-      header: "📊 Live Dashboard"
-      message: |
-        View full AI PR Dashboard here: 
-        👉 https://icryptologic.github.io/GITHUB-Native-PR-AI/
-        #testnewdashboard
+      - name: Comment Dashboard Link
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: "📊 Live Dashboard"
+          message: |
+            View full AI PR Dashboard here:  
+            👉 https://icryptologic.github.io/GITHUB-Native-PR-AI/
+            #test15/10/2025/4:04-test2 with main pr commit
