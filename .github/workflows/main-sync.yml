@@ -1,0 +1,31 @@
+name: Sync Dashboard on Main Commit
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  sync-dashboard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+
+      - name: Update Timestamp in Dashboard
+        run: |
+          if [ -f docs/dashboard.json ]; then
+            jq 'map(.timestamp = (now | strftime("%Y-%m-%dT%H:%M:%SZ")))' docs/dashboard.json > docs/tmp.json
+            mv docs/tmp.json docs/dashboard.json
+          fi
+
+      - name: Commit & Push Dashboard Refresh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/dashboard.json
+          git commit -m "Refresh dashboard on main commit" || echo "No changes"
+          git push
