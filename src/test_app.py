@@ -6,5 +6,5 @@ def test_addition_success():
 
 def test_addition_fail():
     # ❌ Intentional failure for demo
-    assert add(2, 2) == 5
+    assert add(2, 2) == 2
 
