@@ -2,31 +2,47 @@ name: PR Dashboard
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, closed]
+
+permissions:
+  contents: write
+  pull-requests: write
+  security-events: read
 
 jobs:
-  analyze:
+  pr-dashboard:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
+      # --- Checkout PR branch ---
+      - name: Checkout PR branch
         uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          fetch-depth: 0
+          ref: ${{ github.head_ref }}
+
+      # --- Python setup ---
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
 
       - name: Install dependencies
         run: |
-          pip install bandit flake8 requests
+          python -m pip install --upgrade pip
+          pip install pytest bandit flake8 requests
 
-      - name: Run Bandit Security Scan
-        run: bandit -r . -f json -o bandit_report.json || true
+      # --- Run tests and analysis ---
+      - name: Run Pytest
+        run: pytest -q > pytest_results.txt || true
 
-      - name: Run Flake8 Lint
-        run: flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics > lint_report.txt || true
+      - name: Run Bandit (security)
+        run: bandit -r src -f json -o bandit_report.json || true
 
+      - name: Run Flake8 (lint)
+        run: flake8 src > lint_report.txt || true
+
+      # --- Compute Metrics and Update Dashboard ---
       - name: Compute Metrics and Update Dashboard
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -38,25 +54,38 @@ jobs:
           headers = {"Authorization": f"token {os.getenv('GITHUB_TOKEN')}"}
 
           def safe_get(url):
-              r = requests.get(url, headers=headers)
-              return r.json() if r.status_code == 200 else []
+              try:
+                  r = requests.get(url, headers=headers)
+                  if r.status_code != 200:
+                      print(f"⚠️ Failed to fetch {url}, status {r.status_code}")
+                      return []
+                  data = r.json()
+                  if isinstance(data, dict):
+                      return data.get("items", [])
+                  return data
+              except Exception as e:
+                  print(f"⚠️ Error fetching {url}: {e}")
+                  return []
 
           # --- Bandit Report ---
           bandit_issues, bandit_summary = 0, []
           if os.path.exists("bandit_report.json"):
               with open("bandit_report.json") as f:
-                  data = json.load(f)
-                  results = data.get("results", [])
-                  bandit_issues = len(results)
-                  bandit_summary = [
-                      {
-                          "msg": i["issue_text"],
-                          "severity": i["issue_severity"],
-                          "line": i["line_number"],
-                          "file": i["filename"]
-                      }
-                      for i in results[:5]
-                  ]
+                  try:
+                      data = json.load(f)
+                      results = data.get("results", [])
+                      bandit_issues = len(results)
+                      bandit_summary = [
+                          {
+                              "msg": i.get("issue_text", ""),
+                              "severity": i.get("issue_severity", ""),
+                              "line": i.get("line_number", ""),
+                              "file": i.get("filename", "")
+                          }
+                          for i in results[:5]
+                      ]
+                  except Exception as e:
+                      print("⚠️ Bandit parse error:", e)
 
           # --- Lint Report ---
           lint_warnings, lint_summary = 0, []
@@ -66,15 +95,45 @@ jobs:
                   lint_warnings = len(lines)
                   lint_summary = [l.strip() for l in lines[:5]]
 
-          # --- CodeQL & Dependabot Alerts via GitHub API ---
+          # --- CodeQL & Dependabot Alerts ---
           codeql_alerts = safe_get(f"https://api.github.com/repos/{repo}/code-scanning/alerts?state=open")
           dependabot_alerts = safe_get(f"https://api.github.com/repos/{repo}/dependabot/alerts?state=open")
 
-          codeql_summary = [{"desc": a["rule"]["description"], "severity": a["rule"]["security_severity_level"]} for a in codeql_alerts[:5]]
-          dependabot_summary = [{"package": a["dependency"]["package"]["name"], "severity": a["security_vulnerability"]["severity"]} for a in dependabot_alerts[:5]]
+          def summarize_codeql(alerts):
+              summary = []
+              for a in alerts[:5]:
+                  try:
+                      rule = a.get("rule", {})
+                      summary.append({
+                          "desc": rule.get("description", "No description"),
+                          "severity": rule.get("security_severity_level", "N/A")
+                      })
+                  except Exception as e:
+                      print("⚠️ CodeQL parse issue:", e)
+              return summary
+
+          def summarize_dependabot(alerts):
+              summary = []
+              for a in alerts[:5]:
+                  try:
+                      dep = a.get("dependency", {}).get("package", {}).get("name", "unknown")
+                      sev = a.get("security_vulnerability", {}).get("severity", "N/A")
+                      summary.append({"package": dep, "severity": sev})
+                  except Exception as e:
+                      print("⚠️ Dependabot parse issue:", e)
+              return summary
+
+          codeql_summary = summarize_codeql(codeql_alerts)
+          dependabot_summary = summarize_dependabot(dependabot_alerts)
+
+          # --- Test Failures ---
+          tests_failed = 0
+          if os.path.exists("pytest_results.txt"):
+              with open("pytest_results.txt") as f:
+                  tests_failed = sum(1 for l in f if "FAILED" in l)
 
           # --- Compute Risk Score ---
-          risk_score = bandit_issues * 2 + lint_warnings * 1 + len(codeql_alerts) * 3 + len(dependabot_alerts) * 2
+          risk_score = bandit_issues * 2 + lint_warnings * 1 + len(codeql_alerts) * 3 + len(dependabot_alerts) * 2 + tests_failed * 5
           if risk_score < 10:
               risk_label = "Low"
           elif risk_score < 30:
@@ -89,6 +148,7 @@ jobs:
               "lint": {"warnings": lint_warnings, "summary": lint_summary},
               "codeql": {"alerts": len(codeql_alerts), "summary": codeql_summary},
               "dependabot": {"alerts": len(dependabot_alerts), "summary": dependabot_summary},
+              "tests_failed": tests_failed,
               "risk_score": risk_score,
               "risk_level": risk_label
           }
@@ -97,7 +157,10 @@ jobs:
           dashboard_file = "docs/dashboard.json"
           if os.path.exists(dashboard_file):
               with open(dashboard_file) as f:
-                  data = json.load(f)
+                  try:
+                      data = json.load(f)
+                  except:
+                      data = {"history": []}
           else:
               data = {"history": []}
 
@@ -108,12 +171,35 @@ jobs:
               json.dump(data, f, indent=2)
 
           print("✅ Updated dashboard.json successfully!")
+          print(json.dumps(dashboard_entry, indent=2))
           EOF
 
-      - name: Commit Dashboard Update
+      # --- Switch to main branch and push updated dashboard.json ---
+      - name: Commit & Push Dashboard Update
         run: |
-          git config --global user.name "GitHub Actions"
-          git config --global user.email "actions@github.com"
+          git fetch origin main
+          git checkout main
+          git pull
+          cp docs/dashboard.json docs/dashboard.json
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
           git add docs/dashboard.json
-          git commit -m "Update dashboard metrics [skip ci]" || echo "No changes"
-          git push
+          git commit -m "Update dashboard with PR #${{ github.event.pull_request.number }}" || echo "No changes"
+          git push origin main || echo "No push needed"
+
+      # --- Comment PR Summary ---
+      - name: Post PR Summary Comment
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: "📊 Test & Security Metrics"
+          message: |
+            | Metric | Value |
+            |--------|-------|
+            | ✅ **Risk Score** | `${{ steps.metrics.outputs.risk || 'calculated' }}` |
+            | 🧩 **Tests Failed** | Counted in script |
+            | 🔐 **Bandit Issues** | Parsed dynamically |
+            | 🧹 **Lint Warnings** | Parsed dynamically |
+            | 🛡️ **CodeQL Alerts** | Auto-fetched |
+            | 📦 **Dependabot Alerts** | Auto-fetched |
+            ---
+            View full interactive dashboard 👉 https://icryptologic.github.io/GITHUB-Native-PR-AI/
