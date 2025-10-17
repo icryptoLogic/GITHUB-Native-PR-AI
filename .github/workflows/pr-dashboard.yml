@@ -2,123 +2,118 @@ name: PR Dashboard
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, closed]
-
-permissions:
-  contents: write
-  pull-requests: write
+    types: [opened, synchronize, reopened]
 
 jobs:
-  pr-dashboard:
+  analyze:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout PR branch
+      - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          ref: ${{ github.head_ref }}
 
-      # --- Run tests & static checks ---
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install pytest bandit flake8
+          pip install bandit flake8 requests
 
-      - name: Run Pytest
-        run: pytest -q > pytest_results.txt || true
+      - name: Run Bandit Security Scan
+        run: bandit -r . -f json -o bandit_report.json || true
 
-      - name: Run Bandit (security)
-        run: bandit -r src > bandit_report.txt || true
+      - name: Run Flake8 Lint
+        run: flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics > lint_report.txt || true
 
-      - name: Run Flake8 (lint)
-        run: flake8 src > lint_report.txt || true
-
-      - name: Compute Metrics
-        id: metrics
+      - name: Compute Metrics and Update Dashboard
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          tests_failed=$(grep -c "FAILED" pytest_results.txt || true)
-          bandit_issues=$(grep -c "Issue:" bandit_report.txt || true)
-          risk=$(( (bandit_issues * 5) + (tests_failed * 10) ))
-          [ $risk -gt 100 ] && risk=100
-          echo "risk=$risk" >> $GITHUB_OUTPUT
-          echo "tests_failed=$tests_failed" >> $GITHUB_OUTPUT
-          echo "bandit_issues=$bandit_issues" >> $GITHUB_OUTPUT
+          python3 <<'EOF'
+          import json, os, time, requests
 
-      - name: Post PR Dashboard Comment
-        uses: marocchino/sticky-pull-request-comment@v2
-        with:
-          header: "📊 GitHub Native Dashboard"
-          message: |
-            ### PR Summary
-            - **Title**: ${{ github.event.pull_request.title }}
-            - **Author**: @${{ github.event.pull_request.user.login }}
-            - **Files Changed**: ${{ github.event.pull_request.changed_files }}
-            - **Additions**: ${{ github.event.pull_request.additions }}
-            - **Deletions**: ${{ github.event.pull_request.deletions }}
+          repo = os.getenv("GITHUB_REPOSITORY")
+          headers = {"Authorization": f"token {os.getenv('GITHUB_TOKEN')}"}
 
-            ### Metrics
-            | Metric | Value |
-            |--------|-------|
-            | Risk Score | ${{ steps.metrics.outputs.risk }} / 100 |
-            | Bandit Issues | ${{ steps.metrics.outputs.bandit_issues }} |
-            | Tests Failed | ${{ steps.metrics.outputs.tests_failed }} |
+          def safe_get(url):
+              r = requests.get(url, headers=headers)
+              return r.json() if r.status_code == 200 else []
 
-      # --- Save PR summary JSON ---
-      - name: Save PR summary JSON
-        run: |
-          mkdir -p /tmp/pr_reports
-          cat <<EOF > /tmp/pr_reports/latest.json
-          {
-            "id": "${{ github.event.pull_request.number }}",
-            "title": "${{ github.event.pull_request.title }}",
-            "author": "${{ github.event.pull_request.user.login }}",
-            "additions": "${{ github.event.pull_request.additions }}",
-            "deletions": "${{ github.event.pull_request.deletions }}",
-            "changed_files": "${{ github.event.pull_request.changed_files }}",
-            "risk": "${{ steps.metrics.outputs.risk }}",
-            "bandit": "${{ steps.metrics.outputs.bandit_issues }}",
-            "tests_failed": "${{ steps.metrics.outputs.tests_failed }}",
-            "state": "${{ github.event.pull_request.state }}",
-            "merged": "${{ github.event.pull_request.merged }}"
+          # --- Bandit Report ---
+          bandit_issues, bandit_summary = 0, []
+          if os.path.exists("bandit_report.json"):
+              with open("bandit_report.json") as f:
+                  data = json.load(f)
+                  results = data.get("results", [])
+                  bandit_issues = len(results)
+                  bandit_summary = [
+                      {
+                          "msg": i["issue_text"],
+                          "severity": i["issue_severity"],
+                          "line": i["line_number"],
+                          "file": i["filename"]
+                      }
+                      for i in results[:5]
+                  ]
+
+          # --- Lint Report ---
+          lint_warnings, lint_summary = 0, []
+          if os.path.exists("lint_report.txt"):
+              with open("lint_report.txt") as f:
+                  lines = f.readlines()
+                  lint_warnings = len(lines)
+                  lint_summary = [l.strip() for l in lines[:5]]
+
+          # --- CodeQL & Dependabot Alerts via GitHub API ---
+          codeql_alerts = safe_get(f"https://api.github.com/repos/{repo}/code-scanning/alerts?state=open")
+          dependabot_alerts = safe_get(f"https://api.github.com/repos/{repo}/dependabot/alerts?state=open")
+
+          codeql_summary = [{"desc": a["rule"]["description"], "severity": a["rule"]["security_severity_level"]} for a in codeql_alerts[:5]]
+          dependabot_summary = [{"package": a["dependency"]["package"]["name"], "severity": a["security_vulnerability"]["severity"]} for a in dependabot_alerts[:5]]
+
+          # --- Compute Risk Score ---
+          risk_score = bandit_issues * 2 + lint_warnings * 1 + len(codeql_alerts) * 3 + len(dependabot_alerts) * 2
+          if risk_score < 10:
+              risk_label = "Low"
+          elif risk_score < 30:
+              risk_label = "Medium"
+          else:
+              risk_label = "High"
+
+          # --- Build Dashboard Entry ---
+          dashboard_entry = {
+              "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+              "bandit": {"issues": bandit_issues, "summary": bandit_summary},
+              "lint": {"warnings": lint_warnings, "summary": lint_summary},
+              "codeql": {"alerts": len(codeql_alerts), "summary": codeql_summary},
+              "dependabot": {"alerts": len(dependabot_alerts), "summary": dependabot_summary},
+              "risk_score": risk_score,
+              "risk_level": risk_label
           }
+
+          os.makedirs("docs", exist_ok=True)
+          dashboard_file = "docs/dashboard.json"
+          if os.path.exists(dashboard_file):
+              with open(dashboard_file) as f:
+                  data = json.load(f)
+          else:
+              data = {"history": []}
+
+          data["last_update"] = dashboard_entry["timestamp"]
+          data["history"].append(dashboard_entry)
+
+          with open(dashboard_file, "w") as f:
+              json.dump(data, f, indent=2)
+
+          print("✅ Updated dashboard.json successfully!")
           EOF
 
-      - name: Checkout main branch
-        uses: actions/checkout@v4
-        with:
-          ref: main
-
-      - name: Update dashboard data
+      - name: Commit Dashboard Update
         run: |
-          mkdir -p docs
-          if [ ! -f docs/dashboard.json ]; then
-            echo "[]" > docs/dashboard.json
-          fi
-          jq --slurpfile new_entry /tmp/pr_reports/latest.json '
-            (map(select(.id != $new_entry[0].id))) as $existing
-            | $existing + $new_entry
-          ' docs/dashboard.json > docs/tmp.json
-          mv docs/tmp.json docs/dashboard.json
-
-      - name: Commit & Push dashboard.json
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
           git add docs/dashboard.json
-          git commit -m "Update dashboard with PR #${{ github.event.pull_request.number }}" || echo "No changes"
+          git commit -m "Update dashboard metrics [skip ci]" || echo "No changes"
           git push
-
-      - name: Comment Dashboard Link
-        uses: marocchino/sticky-pull-request-comment@v2
-        with:
-          header: "📊 Live Dashboard"
-          message: |
-            View full AI PR Dashboard here:  
-            👉 https://icryptologic.github.io/GITHUB-Native-PR-AI/
-            #test15/10/2025/4:04-test2 with main pr commit
