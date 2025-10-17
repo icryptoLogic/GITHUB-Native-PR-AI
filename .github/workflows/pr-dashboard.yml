@@ -7,19 +7,22 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  security-events: read   # For CodeQL
+  issues: read
 
 jobs:
   pr-dashboard:
     runs-on: ubuntu-latest
 
     steps:
+      # --- Checkout PR branch ---
       - name: Checkout PR branch
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           ref: ${{ github.head_ref }}
 
-      # --- Run tests & static checks ---
+      # --- Set up Python ---
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
@@ -28,8 +31,9 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest bandit flake8
+          pip install pytest bandit flake8 requests
 
+      # --- Run Static and Test Checks ---
       - name: Run Pytest
         run: pytest -q > pytest_results.txt || true
 
@@ -39,17 +43,39 @@ jobs:
       - name: Run Flake8 (lint)
         run: flake8 src > lint_report.txt || true
 
+      # --- Compute Local Metrics ---
       - name: Compute Metrics
         id: metrics
         run: |
           tests_failed=$(grep -c "FAILED" pytest_results.txt || true)
           bandit_issues=$(grep -c "Issue:" bandit_report.txt || true)
-          risk=$(( (bandit_issues * 5) + (tests_failed * 10) ))
+          lint_issues=$(wc -l < lint_report.txt || echo 0)
+          risk=$(( (bandit_issues * 5) + (tests_failed * 10) + (lint_issues * 2) ))
           [ $risk -gt 100 ] && risk=100
           echo "risk=$risk" >> $GITHUB_OUTPUT
           echo "tests_failed=$tests_failed" >> $GITHUB_OUTPUT
           echo "bandit_issues=$bandit_issues" >> $GITHUB_OUTPUT
+          echo "lint_issues=$lint_issues" >> $GITHUB_OUTPUT
 
+      # --- Fetch CodeQL and Dependabot Metrics ---
+      - name: Fetch CodeQL & Dependabot Metrics
+        id: security
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Fetch CodeQL alerts
+          codeql_count=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            https://api.github.com/repos/$REPO/code-scanning/alerts?state=open | jq '. | length')
+
+          # Fetch Dependabot alerts
+          dependabot_count=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            https://api.github.com/repos/$REPO/dependabot/alerts?state=open | jq '. | length')
+
+          echo "codeql_count=$codeql_count" >> $GITHUB_OUTPUT
+          echo "dependabot_count=$dependabot_count" >> $GITHUB_OUTPUT
+
+      # --- Post PR Summary as Sticky Comment ---
       - name: Post PR Dashboard Comment
         uses: marocchino/sticky-pull-request-comment@v2
         with:
@@ -62,14 +88,17 @@ jobs:
             - **Additions**: ${{ github.event.pull_request.additions }}
             - **Deletions**: ${{ github.event.pull_request.deletions }}
 
-            ### Metrics
+            ### 🧪 Test & Security Metrics
             | Metric | Value |
             |--------|-------|
-            | Risk Score | ${{ steps.metrics.outputs.risk }} / 100 |
-            | Bandit Issues | ${{ steps.metrics.outputs.bandit_issues }} |
-            | Tests Failed | ${{ steps.metrics.outputs.tests_failed }} |
+            | ✅ Risk Score | ${{ steps.metrics.outputs.risk }} / 100 |
+            | 🧩 Tests Failed | ${{ steps.metrics.outputs.tests_failed }} |
+            | 🔐 Bandit Issues | ${{ steps.metrics.outputs.bandit_issues }} |
+            | 🧹 Lint Warnings | ${{ steps.metrics.outputs.lint_issues }} |
+            | 🛡️ CodeQL Alerts | ${{ steps.security.outputs.codeql_count }} |
+            | 📦 Dependabot Alerts | ${{ steps.security.outputs.dependabot_count }} |
 
-      # --- Save PR summary JSON ---
+      # --- Save PR Summary JSON ---
       - name: Save PR summary JSON
         run: |
           mkdir -p /tmp/pr_reports
@@ -84,11 +113,15 @@ jobs:
             "risk": "${{ steps.metrics.outputs.risk }}",
             "bandit": "${{ steps.metrics.outputs.bandit_issues }}",
             "tests_failed": "${{ steps.metrics.outputs.tests_failed }}",
+            "lint_issues": "${{ steps.metrics.outputs.lint_issues }}",
+            "codeql": "${{ steps.security.outputs.codeql_count }}",
+            "dependabot": "${{ steps.security.outputs.dependabot_count }}",
             "state": "${{ github.event.pull_request.state }}",
             "merged": "${{ github.event.pull_request.merged }}"
           }
           EOF
 
+      # --- Update Dashboard in Main Branch ---
       - name: Checkout main branch
         uses: actions/checkout@v4
         with:
@@ -112,7 +145,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add docs/dashboard.json
           git commit -m "Update dashboard with PR #${{ github.event.pull_request.number }}" || echo "No changes"
-          git push
+          git push origin HEAD:main
 
       - name: Comment Dashboard Link
         uses: marocchino/sticky-pull-request-comment@v2
@@ -121,4 +154,3 @@ jobs:
           message: |
             View full AI PR Dashboard here:  
             👉 https://icryptologic.github.io/GITHUB-Native-PR-AI/
-            #test15/10/2025/4:04-test2 with main pr commit
