@@ -1,124 +1,156 @@
-name: PR Validation & Metrics Update
+name: PR Dashboard
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, closed]
 
 permissions:
   contents: write
   pull-requests: write
-  security-events: read  # 🆕 needed for CodeQL / Dependabot API
+  security-events: read   # For CodeQL
+  issues: read
 
 jobs:
-  validate:
+  pr-dashboard:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
+      # --- Checkout PR branch ---
+      - name: Checkout PR branch
         uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          fetch-depth: 0
+          ref: ${{ github.head_ref }}
+
+      # --- Set up Python ---
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
 
       - name: Install dependencies
         run: |
-          pip install pytest bandit jq requests
+          python -m pip install --upgrade pip
+          pip install pytest bandit flake8 requests
 
+      # --- Run Static and Test Checks ---
       - name: Run Pytest
-        id: tests
-        run: |
-          pytest src/test_app.py -q --disable-warnings || true
-          total=$(pytest src/test_app.py -q --disable-warnings | grep -Eo "[0-9]+ passed" | awk '{print $1}')
-          failed=$(pytest src/test_app.py -q --disable-warnings | grep -Eo "[0-9]+ failed" | awk '{print $1}')
-          total=${total:-0}
-          failed=${failed:-0}
-          echo "total_tests=$total" >> $GITHUB_OUTPUT
-          echo "failed_tests=$failed" >> $GITHUB_OUTPUT
+        run: pytest -q > pytest_results.txt || true
 
-      - name: Run Bandit Security Scan
-        id: bandit
-        run: |
-          mkdir -p reports
-          bandit -r src -f json -o reports/bandit.json || true
-          issues=$(jq '.results | length' reports/bandit.json)
-          echo "issues=$issues" >> $GITHUB_OUTPUT
+      - name: Run Bandit (security)
+        run: bandit -r src > bandit_report.txt || true
 
-      # 🆕 CodeQL and Dependabot Metrics
-      - name: Fetch Dependabot Alerts
-        id: dependabot
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-        run: |
-          alerts=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/$REPO/dependabot/alerts?state=open" | jq length)
-          echo "alerts=$alerts" >> $GITHUB_OUTPUT
+      - name: Run Flake8 (lint)
+        run: flake8 src > lint_report.txt || true
 
-      - name: Fetch CodeQL Alerts
-        id: codeql
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
+      # --- Compute Local Metrics ---
+      - name: Compute Metrics
+        id: metrics
         run: |
-          issues=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/$REPO/code-scanning/alerts?state=open" | jq length)
-          echo "issues=$issues" >> $GITHUB_OUTPUT
-
-      - name: Compute Risk Score
-        id: risk
-        run: |
-          bandit=${{ steps.bandit.outputs.issues }}
-          failed=${{ steps.tests.outputs.failed_tests }}
-          dependabot=${{ steps.dependabot.outputs.alerts }}
-          codeql=${{ steps.codeql.outputs.issues }}
-          risk=$(( (bandit * 5) + (failed * 10) + (dependabot * 5) + (codeql * 7) ))
-          if [ $risk -gt 100 ]; then risk=100; fi
+          tests_failed=$(grep -c "FAILED" pytest_results.txt || true)
+          bandit_issues=$(grep -c "Issue:" bandit_report.txt || true)
+          lint_issues=$(wc -l < lint_report.txt || echo 0)
+          risk=$(( (bandit_issues * 5) + (tests_failed * 10) + (lint_issues * 2) ))
+          [ $risk -gt 100 ] && risk=100
           echo "risk=$risk" >> $GITHUB_OUTPUT
+          echo "tests_failed=$tests_failed" >> $GITHUB_OUTPUT
+          echo "bandit_issues=$bandit_issues" >> $GITHUB_OUTPUT
+          echo "lint_issues=$lint_issues" >> $GITHUB_OUTPUT
 
-      - name: Update Dashboard JSON
+      # --- Fetch CodeQL and Dependabot Metrics ---
+      - name: Fetch CodeQL & Dependabot Metrics
+        id: security
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Fetch CodeQL alerts
+          codeql_count=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            https://api.github.com/repos/$REPO/code-scanning/alerts?state=open | jq '. | length')
+
+          # Fetch Dependabot alerts
+          dependabot_count=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            https://api.github.com/repos/$REPO/dependabot/alerts?state=open | jq '. | length')
+
+          echo "codeql_count=$codeql_count" >> $GITHUB_OUTPUT
+          echo "dependabot_count=$dependabot_count" >> $GITHUB_OUTPUT
+
+      # --- Post PR Summary as Sticky Comment ---
+      - name: Post PR Dashboard Comment
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: "📊 GitHub Native Dashboard"
+          message: |
+            ### PR Summary
+            - **Title**: ${{ github.event.pull_request.title }}
+            - **Author**: @${{ github.event.pull_request.user.login }}
+            - **Files Changed**: ${{ github.event.pull_request.changed_files }}
+            - **Additions**: ${{ github.event.pull_request.additions }}
+            - **Deletions**: ${{ github.event.pull_request.deletions }}
+
+            ### 🧪 Test & Security Metrics
+            | Metric | Value |
+            |--------|-------|
+            | ✅ Risk Score | ${{ steps.metrics.outputs.risk }} / 100 |
+            | 🧩 Tests Failed | ${{ steps.metrics.outputs.tests_failed }} |
+            | 🔐 Bandit Issues | ${{ steps.metrics.outputs.bandit_issues }} |
+            | 🧹 Lint Warnings | ${{ steps.metrics.outputs.lint_issues }} |
+            | 🛡️ CodeQL Alerts | ${{ steps.security.outputs.codeql_count }} |
+            | 📦 Dependabot Alerts | ${{ steps.security.outputs.dependabot_count }} |
+
+      # --- Save PR Summary JSON ---
+      - name: Save PR summary JSON
+        run: |
+          mkdir -p /tmp/pr_reports
+          cat <<EOF > /tmp/pr_reports/latest.json
+          {
+            "id": "${{ github.event.pull_request.number }}",
+            "title": "${{ github.event.pull_request.title }}",
+            "author": "${{ github.event.pull_request.user.login }}",
+            "additions": "${{ github.event.pull_request.additions }}",
+            "deletions": "${{ github.event.pull_request.deletions }}",
+            "changed_files": "${{ github.event.pull_request.changed_files }}",
+            "risk": "${{ steps.metrics.outputs.risk }}",
+            "bandit": "${{ steps.metrics.outputs.bandit_issues }}",
+            "tests_failed": "${{ steps.metrics.outputs.tests_failed }}",
+            "lint_issues": "${{ steps.metrics.outputs.lint_issues }}",
+            "codeql": "${{ steps.security.outputs.codeql_count }}",
+            "dependabot": "${{ steps.security.outputs.dependabot_count }}",
+            "state": "${{ github.event.pull_request.state }}",
+            "merged": "${{ github.event.pull_request.merged }}"
+          }
+          EOF
+
+      # --- Update Dashboard in Main Branch ---
+      - name: Checkout main branch
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Update dashboard data
         run: |
           mkdir -p docs
-          pr_number="${{ github.event.pull_request.number }}"
-          pr_title="${{ github.event.pull_request.title }}"
-          author="${{ github.event.pull_request.user.login }}"
-          bandit=${{ steps.bandit.outputs.issues }}
-          failed=${{ steps.tests.outputs.failed_tests }}
-          dependabot=${{ steps.dependabot.outputs.alerts }}
-          codeql=${{ steps.codeql.outputs.issues }}
-          risk=${{ steps.risk.outputs.risk }}
-          ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-
-          jq --arg id "$pr_number" \
-             --arg title "$pr_title" \
-             --arg author "$author" \
-             --argjson bandit "$bandit" \
-             --argjson failed "$failed" \
-             --argjson dependabot "$dependabot" \
-             --argjson codeql "$codeql" \
-             --argjson risk "$risk" \
-             --arg ts "$ts" \
-             'map(select(.id != ($id|tonumber))) + [{
-                "id": ($id|tonumber),
-                "title": $title,
-                "author": $author,
-                "bandit": $bandit,
-                "tests_failed": $failed,
-                "dependabot": $dependabot,
-                "codeql": $codeql,
-                "risk": $risk,
-                "timestamp": $ts
-             }]' docs/dashboard.json > docs/tmp.json
-
+          if [ ! -f docs/dashboard.json ]; then
+            echo "[]" > docs/dashboard.json
+          fi
+          jq --slurpfile new_entry /tmp/pr_reports/latest.json '
+            (map(select(.id != $new_entry[0].id))) as $existing
+            | $existing + $new_entry
+          ' docs/dashboard.json > docs/tmp.json
           mv docs/tmp.json docs/dashboard.json
 
-      - name: Commit Dashboard Update
+      - name: Commit & Push dashboard.json
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add docs/dashboard.json
-          git commit -m "Update metrics for PR #${{ github.event.pull_request.number }}" || echo "No changes"
-          git push
+          git commit -m "Update dashboard with PR #${{ github.event.pull_request.number }}" || echo "No changes"
+          git push origin HEAD:main
+
+      - name: Comment Dashboard Link
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: "📊 Live Dashboard"
+          message: |
+            View full AI PR Dashboard here:  
+            👉 https://icryptologic.github.io/GITHUB-Native-PR-AI/
