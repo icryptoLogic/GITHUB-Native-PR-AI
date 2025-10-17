@@ -534,5 +534,21 @@
     "dependabot": "3",
     "state": "open",
     "merged": "false"
+  },
+  {
+    "id": "72",
+    "title": "Fix test case for addition function",
+    "author": "icryptoLogic",
+    "additions": "1",
+    "deletions": "1",
+    "changed_files": "1",
+    "risk": "33",
+    "bandit": "3",
+    "tests_failed": "0",
+    "lint_issues": "9",
+    "codeql": "0",
+    "dependabot": "3",
+    "state": "open",
+    "merged": "false"
   }
 ]
