@@ -471,12 +471,12 @@
     "id": "67",
     "title": "Fix test case for addition function",
     "author": "icryptoLogic",
-    "additions": "1",
-    "deletions": "1",
-    "changed_files": "1",
-    "risk": "15",
+    "additions": "0",
+    "deletions": "0",
+    "changed_files": "0",
+    "risk": "25",
     "bandit": "3",
-    "tests_failed": "0",
+    "tests_failed": "1",
     "state": "open",
     "merged": "false"
   }
