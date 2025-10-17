@@ -468,19 +468,6 @@
     "merged": "false"
   },
   {
-    "id": "67",
-    "title": "Fix test case for addition function",
-    "author": "icryptoLogic",
-    "additions": "0",
-    "deletions": "0",
-    "changed_files": "0",
-    "risk": "25",
-    "bandit": "3",
-    "tests_failed": "1",
-    "state": "open",
-    "merged": "false"
-  },
-  {
     "id": "68",
     "title": "Refactor PR dashboard workflow for validation and metrics",
     "author": "icryptoLogic",
@@ -495,5 +482,21 @@
     "dependabot": "3",
     "state": "closed",
     "merged": "true"
+  },
+  {
+    "id": "67",
+    "title": "Fix test case for addition function",
+    "author": "icryptoLogic",
+    "additions": "43",
+    "deletions": "11",
+    "changed_files": "1",
+    "risk": "43",
+    "bandit": "3",
+    "tests_failed": "1",
+    "lint_issues": "9",
+    "codeql": "0",
+    "dependabot": "3",
+    "state": "open",
+    "merged": "false"
   }
 ]
