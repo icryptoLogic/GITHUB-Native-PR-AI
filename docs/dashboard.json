@@ -1,5 +1,21 @@
 [
   {
+    "id": "74",
+    "commit": "c02a5dab7e7948e63f807d93ebd6a90901ea6582",
+    "title": "Enhance PR dashboard with commit SHA and summary retention",
+    "author": "icryptoLogic",
+    "additions": "17",
+    "deletions": "11",
+    "changed_files": "1",
+    "risk": "43",
+    "bandit": "3",
+    "tests_failed": "1",
+    "lint_issues": "9",
+    "codeql": "0",
+    "dependabot": "3",
+    "timestamp": "2025-10-21T09:45:46Z"
+  },
+  {
     "id": "40",
     "title": "Update app.py",
     "author": "icryptoLogic",
