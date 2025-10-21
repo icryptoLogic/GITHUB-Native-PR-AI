@@ -596,7 +596,7 @@
     "lint_issues": "9",
     "codeql": "0",
     "dependabot": "3",
-    "state": "open",
-    "merged": "false"
+    "state": "closed",
+    "merged": "true"
   }
 ]
