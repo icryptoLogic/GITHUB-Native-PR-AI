@@ -7,7 +7,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
-  security-events: read   # For CodeQL
+  security-events: read
   issues: read
 
 jobs:
@@ -77,19 +77,22 @@ jobs:
 
       # --- Post Commit-Specific PR Summary (non-sticky) ---
       - name: Post Commit-Specific PR Summary
+        id: post_summary
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          COMMIT_SHA: ${{ github.sha }}
         run: |
           body=$(cat <<EOF
-          ### PR Summary (Commit: [${{ github.sha }}](https://github.com/${{ github.repository }}/commit/${{ github.sha }}))
-          - **Title**: ${{ github.event.pull_request.title }}
-          - **Author**: @${{ github.event.pull_request.user.login }}
-          - **Files Changed**: ${{ github.event.pull_request.changed_files }}
-          - **Additions**: ${{ github.event.pull_request.additions }}
-          - **Deletions**: ${{ github.event.pull_request.deletions }}
+          ### 🧩 PR Summary — Commit [${COMMIT_SHA:0:7}](https://github.com/${{ github.repository }}/commit/${COMMIT_SHA})
 
-          ### 🧪 Test & Security Metrics
+          **Title:** ${{ github.event.pull_request.title }}  
+          **Author:** @${{ github.event.pull_request.user.login }}  
+          **Files Changed:** ${{ github.event.pull_request.changed_files }}  
+          **Additions:** ${{ github.event.pull_request.additions }}  
+          **Deletions:** ${{ github.event.pull_request.deletions }}
+
+          #### 🧪 Test & Security Metrics
           | Metric | Value |
           |--------|-------|
           | ✅ Risk Score | ${{ steps.metrics.outputs.risk }} / 100 |
@@ -101,12 +104,40 @@ jobs:
           EOF
           )
 
+          # Post a new comment for this commit
           curl -s -H "Authorization: token $GITHUB_TOKEN" \
             -X POST \
             -d "{\"body\": \"$body\"}" \
-            "https://api.github.com/repos/${{ github.repository }}/issues/$PR_NUMBER/comments"
+            "https://api.github.com/repos/${{ github.repository }}/issues/$PR_NUMBER/comments" \
+            > new_comment.json
 
-      # --- Save PR Summary JSON ---
+          comment_id=$(cat new_comment.json | jq -r '.id')
+          echo "comment_id=$comment_id" >> $GITHUB_OUTPUT
+
+      # --- Retain Only Last 5 Summaries for this PR ---
+      - name: Retain Only Last 5 Summaries
+        if: success()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BOT_NAME: "github-actions[bot]"
+        run: |
+          comments=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            https://api.github.com/repos/${{ github.repository }}/issues/$PR_NUMBER/comments)
+
+          # Get all bot comments containing "🧩 PR Summary"
+          ids=($(echo "$comments" | jq -r ".[] | select(.user.login==\"$BOT_NAME\" and (.body | contains(\"🧩 PR Summary\"))) | .id"))
+
+          count=${#ids[@]}
+          if [ $count -gt 5 ]; then
+            remove_count=$((count - 5))
+            for ((i=0; i<remove_count; i++)); do
+              curl -s -X DELETE -H "Authorization: token $GITHUB_TOKEN" \
+                https://api.github.com/repos/${{ github.repository }}/issues/comments/${ids[$i]}
+            done
+          fi
+
+      # --- Save PR summary JSON ---
       - name: Save PR summary JSON
         run: |
           mkdir -p /tmp/pr_reports
@@ -124,6 +155,7 @@ jobs:
             "lint_issues": "${{ steps.metrics.outputs.lint_issues }}",
             "codeql": "${{ steps.security.outputs.codeql_count }}",
             "dependabot": "${{ steps.security.outputs.dependabot_count }}",
+            "commit_sha": "${{ github.sha }}",
             "state": "${{ github.event.pull_request.state }}",
             "merged": "${{ github.event.pull_request.merged }}"
           }
@@ -155,7 +187,6 @@ jobs:
           git commit -m "Update dashboard with PR #${{ github.event.pull_request.number }}" || echo "No changes"
           git push origin HEAD:main
 
-      # --- Sticky Comment for Dashboard Link ---
       - name: Comment Dashboard Link
         uses: marocchino/sticky-pull-request-comment@v2
         with:
