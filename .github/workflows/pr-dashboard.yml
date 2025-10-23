@@ -1,66 +1,102 @@
-name: 🧩 PR Summary Metrics (per commit, up to 5)
+name: PR Dashboard
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, closed]
+
+permissions:
+  contents: write
+  pull-requests: write
+  security-events: read
+  issues: read
 
 jobs:
-  pr_summary:
+  pr-dashboard:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
+      # --- Checkout PR branch ---
+      - name: Checkout PR branch
         uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
         with:
-          python-version: '3.x'
+          fetch-depth: 0
+          ref: ${{ github.head_ref }}
+
+      # --- Set up Python ---
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
 
       - name: Install dependencies
         run: |
-          pip install pylint bandit jq
+          python -m pip install --upgrade pip
+          pip install pytest bandit flake8 requests jq
 
-      - name: Run Metrics
+      # --- Run Static and Test Checks ---
+      - name: Run Pytest
+        run: pytest -q > pytest_results.txt || true
+
+      - name: Run Bandit (security)
+        run: bandit -r src > bandit_report.txt || true
+
+      - name: Run Flake8 (lint)
+        run: flake8 src > lint_report.txt || true
+
+      # --- Compute Local Metrics ---
+      - name: Compute Metrics
         id: metrics
         run: |
-          echo "risk=85" >> $GITHUB_OUTPUT
-          echo "tests_failed=0" >> $GITHUB_OUTPUT
-          echo "bandit_issues=1" >> $GITHUB_OUTPUT
-          echo "lint_issues=2" >> $GITHUB_OUTPUT
+          tests_failed=$(grep -c "FAILED" pytest_results.txt || true)
+          bandit_issues=$(grep -c "Issue:" bandit_report.txt || true)
+          lint_issues=$(wc -l < lint_report.txt || echo 0)
 
-      - name: Run Security Scan
+          risk=$(( (bandit_issues * 5) + (tests_failed * 10) + (lint_issues * 2) ))
+          [ $risk -gt 100 ] && risk=100
+
+          # Risk indicator emoji
+          if [ "$risk" -le 30 ]; then
+            indicator="🟢"
+          elif [ "$risk" -le 70 ]; then
+            indicator="🟡"
+          else
+            indicator="🔴"
+          fi
+
+          echo "risk=$risk" >> $GITHUB_OUTPUT
+          echo "indicator=$indicator" >> $GITHUB_OUTPUT
+          echo "tests_failed=$tests_failed" >> $GITHUB_OUTPUT
+          echo "bandit_issues=$bandit_issues" >> $GITHUB_OUTPUT
+          echo "lint_issues=$lint_issues" >> $GITHUB_OUTPUT
+
+      # --- Fetch CodeQL and Dependabot Metrics ---
+      - name: Fetch CodeQL & Dependabot Metrics
         id: security
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
         run: |
-          echo "codeql_count=0" >> $GITHUB_OUTPUT
-          echo "dependabot_count=0" >> $GITHUB_OUTPUT
+          codeql_count=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            https://api.github.com/repos/$REPO/code-scanning/alerts?state=open | jq '. | length')
 
-      # 🧩 Post Commit-Specific PR Summary (adds new comment each push)
-      - name: Post Commit-Specific PR Summary
-        id: post_summary
+          dependabot_count=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            https://api.github.com/repos/$REPO/dependabot/alerts?state=open | jq '. | length')
+
+          echo "codeql_count=$codeql_count" >> $GITHUB_OUTPUT
+          echo "dependabot_count=$dependabot_count" >> $GITHUB_OUTPUT
+
+      # --- Post PR Summary Comment (Retained up to 5 commits) ---
+      - name: Post PR Summary Comment
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          COMMIT_SHA: ${{ github.event.after }}
         run: |
-          # Compute Risk Emoji based on risk score
-          risk=${{ steps.metrics.outputs.risk }}
-          if [ "$risk" -ge 80 ]; then
-            risk_emoji="🟢"
-          elif [ "$risk" -ge 50 ]; then
-            risk_emoji="🟡"
-          else
-            risk_emoji="🔴"
-          fi
+          sha_short=$(git rev-parse --short HEAD)
+          timestamp=$(date -u "+%Y-%m-%d %H:%M:%S UTC")
 
-          # Get UTC timestamp for display
-          current_time=$(date -u "+%Y-%m-%d %H:%M:%S UTC")
-
-          # Create formatted summary
-          summary=$(cat <<EOF
----
-### 🧩 PR Summary — Commit \`${{ env.COMMIT_SHA }}\`
-⏱️ *${current_time}*
+          summary="---
+**PR Summary (Commit:** \`${sha_short}\`)  
+⏱️ ${timestamp}
 
 **Title:** ${{ github.event.pull_request.title }}  
 **Author:** @${{ github.event.pull_request.user.login }}  
@@ -68,42 +104,54 @@ jobs:
 **Additions:** ${{ github.event.pull_request.additions }}  
 **Deletions:** ${{ github.event.pull_request.deletions }}
 
-#### 🧪 Test & Security Metrics
+### 🧪 Test & Security Metrics
 | Metric | Value |
 |--------|-------|
-| ${risk_emoji} **Risk Score** | ${{ steps.metrics.outputs.risk }} / 100 |
+| ${ {steps.metrics.outputs.indicator} } **Risk Score** | ${{ steps.metrics.outputs.risk }} / 100 |
 | 🧩 Tests Failed | ${{ steps.metrics.outputs.tests_failed }} |
 | 🔐 Bandit Issues | ${{ steps.metrics.outputs.bandit_issues }} |
 | 🧹 Lint Warnings | ${{ steps.metrics.outputs.lint_issues }} |
 | 🛡️ CodeQL Alerts | ${{ steps.security.outputs.codeql_count }} |
 | 📦 Dependabot Alerts | ${{ steps.security.outputs.dependabot_count }} |
+---"
 
----
-EOF
-)
-
-          # Post the summary as a new comment
-          body=$(jq -Rs . <<< "$summary")
+          # Post new summary as a new comment
           curl -s -H "Authorization: token $GITHUB_TOKEN" \
             -X POST \
-            -d "{\"body\": $body}" \
+            -d "{\"body\": \"$summary\"}" \
             "https://api.github.com/repos/${{ github.repository }}/issues/$PR_NUMBER/comments"
 
-      # 🧹 Keep only latest 5 summaries (delete older ones)
+      # 🧹 Keep only latest 5 PR summaries (delete older ones correctly)
       - name: Clean up old PR summaries
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          comments=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-            "https://api.github.com/repos/${{ github.repository }}/issues/$PR_NUMBER/comments" | jq -r '.[].id')
+          comments_json=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}/issues/$PR_NUMBER/comments?per_page=100")
 
-          total=$(echo "$comments" | wc -l)
+          summary_ids=$(echo "$comments_json" | jq -r '.[] | select(.user.login=="github-actions[bot]") | select(.body | startswith("---")) | .id')
+
+          total=$(echo "$summary_ids" | wc -l)
+          echo "Found $total PR summary comments."
+
           if [ "$total" -gt 5 ]; then
-            remove=$(echo "$comments" | head -n $(($total - 5)))
+            remove=$(echo "$summary_ids" | head -n $(($total - 5)))
+            echo "Deleting $((total - 5)) old summaries..."
             for id in $remove; do
               curl -s -H "Authorization: token $GITHUB_TOKEN" \
                 -X DELETE \
                 "https://api.github.com/repos/${{ github.repository }}/issues/comments/$id"
             done
+          else
+            echo "No cleanup needed."
           fi
+
+      # --- Comment Live Dashboard Link ---
+      - name: Comment Dashboard Link
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: "📊 Live Dashboard"
+          message: |
+            View full AI PR Dashboard here:  
+            👉 https://icryptologic.github.io/GITHUB-Native-PR-AI/
