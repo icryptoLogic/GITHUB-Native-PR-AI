@@ -43,36 +43,50 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           COMMIT_SHA: ${{ github.event.after }}
         run: |
-          # Create a formatted summary for this commit
-          escaped_body=$(jq -Rs . <<'EOF'
-          ---
-          ### 🧩 PR Summary — Commit `${{ env.COMMIT_SHA }}`  
-          ⏱️ *$(date -u "+%Y-%m-%d %H:%M:%S UTC")*
+          # Compute Risk Emoji based on risk score
+          risk=${{ steps.metrics.outputs.risk }}
+          if [ "$risk" -ge 80 ]; then
+            risk_emoji="🟢"
+          elif [ "$risk" -ge 50 ]; then
+            risk_emoji="🟡"
+          else
+            risk_emoji="🔴"
+          fi
 
-          **Title:** ${{ github.event.pull_request.title }}  
-          **Author:** @${{ github.event.pull_request.user.login }}  
-          **Files Changed:** ${{ github.event.pull_request.changed_files }}  
-          **Additions:** ${{ github.event.pull_request.additions }}  
-          **Deletions:** ${{ github.event.pull_request.deletions }}
+          # Get UTC timestamp for display
+          current_time=$(date -u "+%Y-%m-%d %H:%M:%S UTC")
 
-          #### 🧪 Test & Security Metrics
-          | Metric | Value |
-          |--------|-------|
-          | ✅ Risk Score | ${{ steps.metrics.outputs.risk }} / 100 |
-          | 🧩 Tests Failed | ${{ steps.metrics.outputs.tests_failed }} |
-          | 🔐 Bandit Issues | ${{ steps.metrics.outputs.bandit_issues }} |
-          | 🧹 Lint Warnings | ${{ steps.metrics.outputs.lint_issues }} |
-          | 🛡️ CodeQL Alerts | ${{ steps.security.outputs.codeql_count }} |
-          | 📦 Dependabot Alerts | ${{ steps.security.outputs.dependabot_count }} |
+          # Create formatted summary
+          summary=$(cat <<EOF
+---
+### 🧩 PR Summary — Commit \`${{ env.COMMIT_SHA }}\`
+⏱️ *${current_time}*
 
-          ---
-          EOF
-          )
+**Title:** ${{ github.event.pull_request.title }}  
+**Author:** @${{ github.event.pull_request.user.login }}  
+**Files Changed:** ${{ github.event.pull_request.changed_files }}  
+**Additions:** ${{ github.event.pull_request.additions }}  
+**Deletions:** ${{ github.event.pull_request.deletions }}
+
+#### 🧪 Test & Security Metrics
+| Metric | Value |
+|--------|-------|
+| ${risk_emoji} **Risk Score** | ${{ steps.metrics.outputs.risk }} / 100 |
+| 🧩 Tests Failed | ${{ steps.metrics.outputs.tests_failed }} |
+| 🔐 Bandit Issues | ${{ steps.metrics.outputs.bandit_issues }} |
+| 🧹 Lint Warnings | ${{ steps.metrics.outputs.lint_issues }} |
+| 🛡️ CodeQL Alerts | ${{ steps.security.outputs.codeql_count }} |
+| 📦 Dependabot Alerts | ${{ steps.security.outputs.dependabot_count }} |
+
+---
+EOF
+)
 
           # Post the summary as a new comment
+          body=$(jq -Rs . <<< "$summary")
           curl -s -H "Authorization: token $GITHUB_TOKEN" \
             -X POST \
-            -d "{\"body\": $escaped_body}" \
+            -d "{\"body\": $body}" \
             "https://api.github.com/repos/${{ github.repository }}/issues/$PR_NUMBER/comments"
 
       # 🧹 Keep only latest 5 summaries (delete older ones)
