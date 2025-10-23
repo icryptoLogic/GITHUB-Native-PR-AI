@@ -571,8 +571,8 @@
     "id": "74",
     "title": "Enhance PR dashboard with commit SHA and summary retention",
     "author": "icryptoLogic",
-    "additions": "32",
-    "deletions": "23",
+    "additions": "66",
+    "deletions": "26",
     "changed_files": "2",
     "risk": "33",
     "bandit": "3",
@@ -580,6 +580,7 @@
     "lint_issues": "9",
     "codeql": "0",
     "dependabot": "3",
+    "commit_sha": "e92a2d181f5a7b31cae8753d980d9ef6f29c196b",
     "state": "open",
     "merged": "false"
   }
