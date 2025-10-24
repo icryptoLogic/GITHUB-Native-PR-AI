@@ -85,7 +85,7 @@ jobs:
           echo "codeql_count=$codeql_count" >> $GITHUB_OUTPUT
           echo "dependabot_count=$dependabot_count" >> $GITHUB_OUTPUT
 
-      # --- Post PR Summary Comment (Retained up to 5 commits) ---
+      # --- Post PR Summary Comment (Keep last 5) ---
       - name: Post PR Summary Comment
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -94,7 +94,8 @@ jobs:
           sha_short=$(git rev-parse --short HEAD)
           timestamp=$(date -u "+%Y-%m-%d %H:%M:%S UTC")
 
-          summary="---
+          summary=$(cat <<EOF
+---
 **PR Summary (Commit:** \`${sha_short}\`)  
 ⏱️ ${timestamp}
 
@@ -107,21 +108,24 @@ jobs:
 ### 🧪 Test & Security Metrics
 | Metric | Value |
 |--------|-------|
-| ${ {steps.metrics.outputs.indicator} } **Risk Score** | ${{ steps.metrics.outputs.risk }} / 100 |
+| **${{ steps.metrics.outputs.indicator }} Risk Score** | ${{ steps.metrics.outputs.risk }} / 100 |
 | 🧩 Tests Failed | ${{ steps.metrics.outputs.tests_failed }} |
 | 🔐 Bandit Issues | ${{ steps.metrics.outputs.bandit_issues }} |
 | 🧹 Lint Warnings | ${{ steps.metrics.outputs.lint_issues }} |
 | 🛡️ CodeQL Alerts | ${{ steps.security.outputs.codeql_count }} |
 | 📦 Dependabot Alerts | ${{ steps.security.outputs.dependabot_count }} |
----"
+---
+EOF
+)
 
-          # Post new summary as a new comment
+          summary_escaped=$(echo "$summary" | jq -Rs .)
+
           curl -s -H "Authorization: token $GITHUB_TOKEN" \
             -X POST \
-            -d "{\"body\": \"$summary\"}" \
+            -d "{\"body\": $summary_escaped}" \
             "https://api.github.com/repos/${{ github.repository }}/issues/$PR_NUMBER/comments"
 
-      # 🧹 Keep only latest 5 PR summaries (delete older ones correctly)
+      # 🧹 Clean up old PR summaries (keep last 5)
       - name: Clean up old PR summaries
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -147,7 +151,7 @@ jobs:
             echo "No cleanup needed."
           fi
 
-      # --- Comment Live Dashboard Link ---
+      # --- Sticky Live Dashboard Link ---
       - name: Comment Dashboard Link
         uses: marocchino/sticky-pull-request-comment@v2
         with:
