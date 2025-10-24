@@ -7,7 +7,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
-  security-events: read   # For CodeQL
+  security-events: read
   issues: read
 
 jobs:
@@ -15,14 +15,12 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # --- Checkout PR branch ---
       - name: Checkout PR branch
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           ref: ${{ github.head_ref }}
 
-      # --- Set up Python ---
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
@@ -31,9 +29,8 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest bandit flake8 requests
+          pip install pytest bandit flake8 requests jq
 
-      # --- Run Static and Test Checks ---
       - name: Run Pytest
         run: pytest -q > pytest_results.txt || true
 
@@ -43,7 +40,6 @@ jobs:
       - name: Run Flake8 (lint)
         run: flake8 src > lint_report.txt || true
 
-      # --- Compute Local Metrics ---
       - name: Compute Metrics
         id: metrics
         run: |
@@ -52,105 +48,109 @@ jobs:
           lint_issues=$(wc -l < lint_report.txt || echo 0)
           risk=$(( (bandit_issues * 5) + (tests_failed * 10) + (lint_issues * 2) ))
           [ $risk -gt 100 ] && risk=100
+
+          if [ $risk -lt 40 ]; then emoji="🟢"
+          elif [ $risk -lt 75 ]; then emoji="🟡"
+          else emoji="🔴"; fi
+
           echo "risk=$risk" >> $GITHUB_OUTPUT
+          echo "emoji=$emoji" >> $GITHUB_OUTPUT
           echo "tests_failed=$tests_failed" >> $GITHUB_OUTPUT
           echo "bandit_issues=$bandit_issues" >> $GITHUB_OUTPUT
           echo "lint_issues=$lint_issues" >> $GITHUB_OUTPUT
 
-      # --- Fetch CodeQL and Dependabot Metrics ---
       - name: Fetch CodeQL & Dependabot Metrics
         id: security
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
         run: |
-          # Fetch CodeQL alerts
           codeql_count=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
             https://api.github.com/repos/$REPO/code-scanning/alerts?state=open | jq '. | length')
 
-          # Fetch Dependabot alerts
           dependabot_count=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
             https://api.github.com/repos/$REPO/dependabot/alerts?state=open | jq '. | length')
 
           echo "codeql_count=$codeql_count" >> $GITHUB_OUTPUT
           echo "dependabot_count=$dependabot_count" >> $GITHUB_OUTPUT
 
-      # --- Post PR Summary as Sticky Comment ---
-      - name: Post PR Dashboard Comment
-        uses: marocchino/sticky-pull-request-comment@v2
-        with:
-          header: "📊 GitHub Native Dashboard"
-          message: |
-            ### PR Summary
-            - **Title**: ${{ github.event.pull_request.title }}
-            - **Author**: @${{ github.event.pull_request.user.login }}
-            - **Files Changed**: ${{ github.event.pull_request.changed_files }}
-            - **Additions**: ${{ github.event.pull_request.additions }}
-            - **Deletions**: ${{ github.event.pull_request.deletions }}
-
-            ### 🧪 Test & Security Metrics
-            | Metric | Value |
-            |--------|-------|
-            | ✅ Risk Score | ${{ steps.metrics.outputs.risk }} / 100 |
-            | 🧩 Tests Failed | ${{ steps.metrics.outputs.tests_failed }} |
-            | 🔐 Bandit Issues | ${{ steps.metrics.outputs.bandit_issues }} |
-            | 🧹 Lint Warnings | ${{ steps.metrics.outputs.lint_issues }} |
-            | 🛡️ CodeQL Alerts | ${{ steps.security.outputs.codeql_count }} |
-            | 📦 Dependabot Alerts | ${{ steps.security.outputs.dependabot_count }} |
-
-      # --- Save PR Summary JSON ---
-      - name: Save PR summary JSON
-        run: |
-          mkdir -p /tmp/pr_reports
-          cat <<EOF > /tmp/pr_reports/latest.json
-          {
-            "id": "${{ github.event.pull_request.number }}",
-            "title": "${{ github.event.pull_request.title }}",
-            "author": "${{ github.event.pull_request.user.login }}",
-            "additions": "${{ github.event.pull_request.additions }}",
-            "deletions": "${{ github.event.pull_request.deletions }}",
-            "changed_files": "${{ github.event.pull_request.changed_files }}",
-            "risk": "${{ steps.metrics.outputs.risk }}",
-            "bandit": "${{ steps.metrics.outputs.bandit_issues }}",
-            "tests_failed": "${{ steps.metrics.outputs.tests_failed }}",
-            "lint_issues": "${{ steps.metrics.outputs.lint_issues }}",
-            "codeql": "${{ steps.security.outputs.codeql_count }}",
-            "dependabot": "${{ steps.security.outputs.dependabot_count }}",
-            "state": "${{ github.event.pull_request.state }}",
-            "merged": "${{ github.event.pull_request.merged }}"
-          }
-          EOF
-
-      # --- Update Dashboard in Main Branch ---
-      - name: Checkout main branch
-        uses: actions/checkout@v4
-        with:
-          ref: main
-
-      - name: Update dashboard data
+      - name: Update Dashboard JSON
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BRANCH_NAME: ${{ github.head_ref }}
         run: |
           mkdir -p docs
-          if [ ! -f docs/dashboard.json ]; then
-            echo "[]" > docs/dashboard.json
-          fi
-          jq --slurpfile new_entry /tmp/pr_reports/latest.json '
-            (map(select(.id != $new_entry[0].id))) as $existing
-            | $existing + $new_entry
-          ' docs/dashboard.json > docs/tmp.json
-          mv docs/tmp.json docs/dashboard.json
+          file="docs/dashboard.json"
+          sha_short=$(git rev-parse --short HEAD)
+          timestamp=$(date -u "+%Y-%m-%d %H:%M:%S UTC")
 
-      - name: Commit & Push dashboard.json
+          new_entry=$(jq -n \
+            --arg id "$PR_NUMBER" \
+            --arg branch "$BRANCH_NAME" \
+            --arg sha "$sha_short" \
+            --arg time "$timestamp" \
+            --arg risk "${{ steps.metrics.outputs.risk }}" \
+            --arg emoji "${{ steps.metrics.outputs.emoji }}" \
+            --arg tests "${{ steps.metrics.outputs.tests_failed }}" \
+            --arg bandit "${{ steps.metrics.outputs.bandit_issues }}" \
+            --arg lint "${{ steps.metrics.outputs.lint_issues }}" \
+            --arg codeql "${{ steps.security.outputs.codeql_count }}" \
+            --arg dependabot "${{ steps.security.outputs.dependabot_count }}" \
+            --arg title "${{ github.event.pull_request.title }}" \
+            --arg author "${{ github.event.pull_request.user.login }}" \
+            --arg additions "${{ github.event.pull_request.additions }}" \
+            --arg deletions "${{ github.event.pull_request.deletions }}" \
+            --arg changed "${{ github.event.pull_request.changed_files }}" \
+            '{id:$id, branch:$branch, sha:$sha, time:$time, risk:$risk, emoji:$emoji,
+              tests_failed:$tests, bandit:$bandit, lint:$lint, codeql:$codeql, dependabot:$dependabot,
+              title:$title, author:$author, additions:$additions, deletions:$deletions,
+              changed_files:$changed}')
+
+          if [ -f "$file" ]; then
+            jq ". += [$new_entry] | sort_by(.time) | .[-5:]" "$file" > tmp.json && mv tmp.json "$file"
+          else
+            echo "[$new_entry]" > "$file"
+          fi
+
+      - name: Commit Dashboard JSON
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add docs/dashboard.json
-          git commit -m "Update dashboard with PR #${{ github.event.pull_request.number }}" || echo "No changes"
-          git push origin HEAD:main
+          git commit -m "🔄 Update PR dashboard metrics [skip ci]" || echo "No changes"
+          git push
+
+      - name: Post PR Summary Comment
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BRANCH_NAME: ${{ github.head_ref }}
+        run: |
+          sha_short=$(git rev-parse --short HEAD)
+          timestamp=$(date -u "+%Y-%m-%d %H:%M:%S UTC")
+
+          summary="### 🧩 Commit Summary (\`${BRANCH_NAME}\` – \`${sha_short}\`)
+⏱️ ${timestamp}
+
+| Metric | Value |
+|--------|-------|
+| **Risk Score** | ${{ steps.metrics.outputs.emoji }} ${{ steps.metrics.outputs.risk }} / 100 |
+| 🧩 Tests Failed | ${{ steps.metrics.outputs.tests_failed }} |
+| 🔐 Bandit Issues | ${{ steps.metrics.outputs.bandit_issues }} |
+| 🧹 Lint Warnings | ${{ steps.metrics.outputs.lint_issues }} |
+| 🛡️ CodeQL Alerts | ${{ steps.security.outputs.codeql_count }} |
+| 📦 Dependabot Alerts | ${{ steps.security.outputs.dependabot_count }} |"
+
+          curl -s -X POST \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -d "{\"body\": \"$summary\"}" \
+            "https://api.github.com/repos/${{ github.repository }}/issues/$PR_NUMBER/comments"
 
       - name: Comment Dashboard Link
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           header: "📊 Live Dashboard"
           message: |
-            View full AI PR Dashboard here:  
+            View the full AI PR Dashboard here:  
             👉 https://icryptologic.github.io/GITHUB-Native-PR-AI/
