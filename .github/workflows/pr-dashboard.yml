@@ -15,14 +15,12 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # --- Checkout PR branch ---
       - name: Checkout PR branch
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           ref: ${{ github.head_ref }}
 
-      # --- Set up Python ---
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
@@ -33,7 +31,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install pytest bandit flake8 requests jq
 
-      # --- Run Static and Test Checks ---
       - name: Run Pytest
         run: pytest -q > pytest_results.txt || true
 
@@ -43,7 +40,6 @@ jobs:
       - name: Run Flake8 (lint)
         run: flake8 src > lint_report.txt || true
 
-      # --- Compute Local Metrics ---
       - name: Compute Metrics
         id: metrics
         run: |
@@ -53,14 +49,9 @@ jobs:
           risk=$(( (bandit_issues * 5) + (tests_failed * 10) + (lint_issues * 2) ))
           [ $risk -gt 100 ] && risk=100
 
-          # Risk level emoji
-          if [ $risk -lt 40 ]; then
-            emoji="🟢"
-          elif [ $risk -lt 75 ]; then
-            emoji="🟡"
-          else
-            emoji="🔴"
-          fi
+          if [ $risk -lt 40 ]; then emoji="🟢"
+          elif [ $risk -lt 75 ]; then emoji="🟡"
+          else emoji="🔴"; fi
 
           echo "risk=$risk" >> $GITHUB_OUTPUT
           echo "emoji=$emoji" >> $GITHUB_OUTPUT
@@ -68,7 +59,6 @@ jobs:
           echo "bandit_issues=$bandit_issues" >> $GITHUB_OUTPUT
           echo "lint_issues=$lint_issues" >> $GITHUB_OUTPUT
 
-      # --- Fetch CodeQL and Dependabot Metrics ---
       - name: Fetch CodeQL & Dependabot Metrics
         id: security
         env:
@@ -84,7 +74,53 @@ jobs:
           echo "codeql_count=$codeql_count" >> $GITHUB_OUTPUT
           echo "dependabot_count=$dependabot_count" >> $GITHUB_OUTPUT
 
-      # --- Post New Summary Comment (Keep last 5 per branch) ---
+      - name: Update Dashboard JSON
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BRANCH_NAME: ${{ github.head_ref }}
+        run: |
+          mkdir -p docs
+          file="docs/dashboard.json"
+          sha_short=$(git rev-parse --short HEAD)
+          timestamp=$(date -u "+%Y-%m-%d %H:%M:%S UTC")
+
+          new_entry=$(jq -n \
+            --arg id "$PR_NUMBER" \
+            --arg branch "$BRANCH_NAME" \
+            --arg sha "$sha_short" \
+            --arg time "$timestamp" \
+            --arg risk "${{ steps.metrics.outputs.risk }}" \
+            --arg emoji "${{ steps.metrics.outputs.emoji }}" \
+            --arg tests "${{ steps.metrics.outputs.tests_failed }}" \
+            --arg bandit "${{ steps.metrics.outputs.bandit_issues }}" \
+            --arg lint "${{ steps.metrics.outputs.lint_issues }}" \
+            --arg codeql "${{ steps.security.outputs.codeql_count }}" \
+            --arg dependabot "${{ steps.security.outputs.dependabot_count }}" \
+            --arg title "${{ github.event.pull_request.title }}" \
+            --arg author "${{ github.event.pull_request.user.login }}" \
+            --arg additions "${{ github.event.pull_request.additions }}" \
+            --arg deletions "${{ github.event.pull_request.deletions }}" \
+            --arg changed "${{ github.event.pull_request.changed_files }}" \
+            '{id:$id, branch:$branch, sha:$sha, time:$time, risk:$risk, emoji:$emoji,
+              tests_failed:$tests, bandit:$bandit, lint:$lint, codeql:$codeql, dependabot:$dependabot,
+              title:$title, author:$author, additions:$additions, deletions:$deletions,
+              changed_files:$changed}')
+
+          if [ -f "$file" ]; then
+            jq ". += [$new_entry] | sort_by(.time) | .[-5:]" "$file" > tmp.json && mv tmp.json "$file"
+          else
+            echo "[$new_entry]" > "$file"
+          fi
+
+      - name: Commit Dashboard JSON
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/dashboard.json
+          git commit -m "🔄 Update PR dashboard metrics [skip ci]" || echo "No changes"
+          git push
+
       - name: Post PR Summary Comment
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -94,9 +130,7 @@ jobs:
           sha_short=$(git rev-parse --short HEAD)
           timestamp=$(date -u "+%Y-%m-%d %H:%M:%S UTC")
 
-          # Compose new summary message
-          summary=$(cat <<EOF
-### 🧩 Commit Summary (\`${BRANCH_NAME}\` – \`${sha_short}\`)
+          summary="### 🧩 Commit Summary (\`${BRANCH_NAME}\` – \`${sha_short}\`)
 ⏱️ ${timestamp}
 
 | Metric | Value |
@@ -106,51 +140,17 @@ jobs:
 | 🔐 Bandit Issues | ${{ steps.metrics.outputs.bandit_issues }} |
 | 🧹 Lint Warnings | ${{ steps.metrics.outputs.lint_issues }} |
 | 🛡️ CodeQL Alerts | ${{ steps.security.outputs.codeql_count }} |
-| 📦 Dependabot Alerts | ${{ steps.security.outputs.dependabot_count }} |
+| 📦 Dependabot Alerts | ${{ steps.security.outputs.dependabot_count }} |"
 
-**Title:** ${{ github.event.pull_request.title }}  
-**Author:** @${{ github.event.pull_request.user.login }}  
-**Files Changed:** ${{ github.event.pull_request.changed_files }}  
-**Additions:** ${{ github.event.pull_request.additions }}  
-**Deletions:** ${{ github.event.pull_request.deletions }}
----
-EOF
-)
-          summary_escaped=$(echo "$summary" | jq -Rs .)
-
-          # Fetch all comments by this bot
-          comments_json=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-            "https://api.github.com/repos/${{ github.repository }}/issues/$PR_NUMBER/comments?per_page=100")
-
-          # Filter existing branch comments
-          branch_comment_ids=$(echo "$comments_json" | jq -r --arg BRANCH "$BRANCH_NAME" \
-            '.[] | select(.user.login=="github-actions[bot]") | select(.body | contains($BRANCH)) | .id')
-
-          # Count existing summaries
-          total=$(echo "$branch_comment_ids" | wc -l)
-          echo "Existing summaries for branch $BRANCH_NAME: $total"
-
-          # If more than 5 exist, delete oldest
-          if [ "$total" -ge 5 ]; then
-            delete_count=$(( total - 4 ))
-            echo "Deleting $delete_count oldest summaries..."
-            echo "$branch_comment_ids" | head -n "$delete_count" | while read -r cid; do
-              curl -s -X DELETE -H "Authorization: token $GITHUB_TOKEN" \
-                "https://api.github.com/repos/${{ github.repository }}/issues/comments/$cid"
-            done
-          fi
-
-          # Post new comment
-          curl -s -H "Authorization: token $GITHUB_TOKEN" \
-            -X POST \
-            -d "{\"body\": $summary_escaped}" \
+          curl -s -X POST \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -d "{\"body\": \"$summary\"}" \
             "https://api.github.com/repos/${{ github.repository }}/issues/$PR_NUMBER/comments"
 
-      # --- Sticky Dashboard Link (Persistent Comment) ---
       - name: Comment Dashboard Link
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           header: "📊 Live Dashboard"
           message: |
-            View full AI PR Dashboard here:  
+            View the full AI PR Dashboard here:  
             👉 https://icryptologic.github.io/GITHUB-Native-PR-AI/
