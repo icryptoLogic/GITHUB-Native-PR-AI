@@ -7,7 +7,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
-  security-events: read   # For CodeQL
+  security-events: read
   issues: read
 
 jobs:
@@ -31,7 +31,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest bandit flake8 requests
+          pip install pytest bandit flake8 requests jq
 
       # --- Run Static and Test Checks ---
       - name: Run Pytest
@@ -52,7 +52,18 @@ jobs:
           lint_issues=$(wc -l < lint_report.txt || echo 0)
           risk=$(( (bandit_issues * 5) + (tests_failed * 10) + (lint_issues * 2) ))
           [ $risk -gt 100 ] && risk=100
+
+          # Risk level emoji
+          if [ $risk -lt 40 ]; then
+            emoji="🟢"
+          elif [ $risk -lt 75 ]; then
+            emoji="🟡"
+          else
+            emoji="🔴"
+          fi
+
           echo "risk=$risk" >> $GITHUB_OUTPUT
+          echo "emoji=$emoji" >> $GITHUB_OUTPUT
           echo "tests_failed=$tests_failed" >> $GITHUB_OUTPUT
           echo "bandit_issues=$bandit_issues" >> $GITHUB_OUTPUT
           echo "lint_issues=$lint_issues" >> $GITHUB_OUTPUT
@@ -64,89 +75,78 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
         run: |
-          # Fetch CodeQL alerts
           codeql_count=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
             https://api.github.com/repos/$REPO/code-scanning/alerts?state=open | jq '. | length')
 
-          # Fetch Dependabot alerts
           dependabot_count=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
             https://api.github.com/repos/$REPO/dependabot/alerts?state=open | jq '. | length')
 
           echo "codeql_count=$codeql_count" >> $GITHUB_OUTPUT
           echo "dependabot_count=$dependabot_count" >> $GITHUB_OUTPUT
 
-      # --- Post PR Summary as Sticky Comment ---
-      - name: Post PR Dashboard Comment
-        uses: marocchino/sticky-pull-request-comment@v2
-        with:
-          header: "📊 GitHub Native Dashboard"
-          message: |
-            ### PR Summary
-            - **Title**: ${{ github.event.pull_request.title }}
-            - **Author**: @${{ github.event.pull_request.user.login }}
-            - **Files Changed**: ${{ github.event.pull_request.changed_files }}
-            - **Additions**: ${{ github.event.pull_request.additions }}
-            - **Deletions**: ${{ github.event.pull_request.deletions }}
-
-            ### 🧪 Test & Security Metrics
-            | Metric | Value |
-            |--------|-------|
-            | ✅ Risk Score | ${{ steps.metrics.outputs.risk }} / 100 |
-            | 🧩 Tests Failed | ${{ steps.metrics.outputs.tests_failed }} |
-            | 🔐 Bandit Issues | ${{ steps.metrics.outputs.bandit_issues }} |
-            | 🧹 Lint Warnings | ${{ steps.metrics.outputs.lint_issues }} |
-            | 🛡️ CodeQL Alerts | ${{ steps.security.outputs.codeql_count }} |
-            | 📦 Dependabot Alerts | ${{ steps.security.outputs.dependabot_count }} |
-
-      # --- Save PR Summary JSON ---
-      - name: Save PR summary JSON
+      # --- Post New Summary Comment (Keep last 5 per branch) ---
+      - name: Post PR Summary Comment
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BRANCH_NAME: ${{ github.head_ref }}
         run: |
-          mkdir -p /tmp/pr_reports
-          cat <<EOF > /tmp/pr_reports/latest.json
-          {
-            "id": "${{ github.event.pull_request.number }}",
-            "title": "${{ github.event.pull_request.title }}",
-            "author": "${{ github.event.pull_request.user.login }}",
-            "additions": "${{ github.event.pull_request.additions }}",
-            "deletions": "${{ github.event.pull_request.deletions }}",
-            "changed_files": "${{ github.event.pull_request.changed_files }}",
-            "risk": "${{ steps.metrics.outputs.risk }}",
-            "bandit": "${{ steps.metrics.outputs.bandit_issues }}",
-            "tests_failed": "${{ steps.metrics.outputs.tests_failed }}",
-            "lint_issues": "${{ steps.metrics.outputs.lint_issues }}",
-            "codeql": "${{ steps.security.outputs.codeql_count }}",
-            "dependabot": "${{ steps.security.outputs.dependabot_count }}",
-            "state": "${{ github.event.pull_request.state }}",
-            "merged": "${{ github.event.pull_request.merged }}"
-          }
-          EOF
+          sha_short=$(git rev-parse --short HEAD)
+          timestamp=$(date -u "+%Y-%m-%d %H:%M:%S UTC")
 
-      # --- Update Dashboard in Main Branch ---
-      - name: Checkout main branch
-        uses: actions/checkout@v4
-        with:
-          ref: main
+          # Compose new summary message
+          summary=$(cat <<EOF
+### 🧩 Commit Summary (\`${BRANCH_NAME}\` – \`${sha_short}\`)
+⏱️ ${timestamp}
 
-      - name: Update dashboard data
-        run: |
-          mkdir -p docs
-          if [ ! -f docs/dashboard.json ]; then
-            echo "[]" > docs/dashboard.json
+| Metric | Value |
+|--------|-------|
+| **Risk Score** | ${{ steps.metrics.outputs.emoji }} ${{ steps.metrics.outputs.risk }} / 100 |
+| 🧩 Tests Failed | ${{ steps.metrics.outputs.tests_failed }} |
+| 🔐 Bandit Issues | ${{ steps.metrics.outputs.bandit_issues }} |
+| 🧹 Lint Warnings | ${{ steps.metrics.outputs.lint_issues }} |
+| 🛡️ CodeQL Alerts | ${{ steps.security.outputs.codeql_count }} |
+| 📦 Dependabot Alerts | ${{ steps.security.outputs.dependabot_count }} |
+
+**Title:** ${{ github.event.pull_request.title }}  
+**Author:** @${{ github.event.pull_request.user.login }}  
+**Files Changed:** ${{ github.event.pull_request.changed_files }}  
+**Additions:** ${{ github.event.pull_request.additions }}  
+**Deletions:** ${{ github.event.pull_request.deletions }}
+---
+EOF
+)
+          summary_escaped=$(echo "$summary" | jq -Rs .)
+
+          # Fetch all comments by this bot
+          comments_json=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}/issues/$PR_NUMBER/comments?per_page=100")
+
+          # Filter existing branch comments
+          branch_comment_ids=$(echo "$comments_json" | jq -r --arg BRANCH "$BRANCH_NAME" \
+            '.[] | select(.user.login=="github-actions[bot]") | select(.body | contains($BRANCH)) | .id')
+
+          # Count existing summaries
+          total=$(echo "$branch_comment_ids" | wc -l)
+          echo "Existing summaries for branch $BRANCH_NAME: $total"
+
+          # If more than 5 exist, delete oldest
+          if [ "$total" -ge 5 ]; then
+            delete_count=$(( total - 4 ))
+            echo "Deleting $delete_count oldest summaries..."
+            echo "$branch_comment_ids" | head -n "$delete_count" | while read -r cid; do
+              curl -s -X DELETE -H "Authorization: token $GITHUB_TOKEN" \
+                "https://api.github.com/repos/${{ github.repository }}/issues/comments/$cid"
+            done
           fi
-          jq --slurpfile new_entry /tmp/pr_reports/latest.json '
-            (map(select(.id != $new_entry[0].id))) as $existing
-            | $existing + $new_entry
-          ' docs/dashboard.json > docs/tmp.json
-          mv docs/tmp.json docs/dashboard.json
 
-      - name: Commit & Push dashboard.json
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add docs/dashboard.json
-          git commit -m "Update dashboard with PR #${{ github.event.pull_request.number }}" || echo "No changes"
-          git push origin HEAD:main
+          # Post new comment
+          curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            -X POST \
+            -d "{\"body\": $summary_escaped}" \
+            "https://api.github.com/repos/${{ github.repository }}/issues/$PR_NUMBER/comments"
 
+      # --- Sticky Dashboard Link (Persistent Comment) ---
       - name: Comment Dashboard Link
         uses: marocchino/sticky-pull-request-comment@v2
         with:
