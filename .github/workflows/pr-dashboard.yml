@@ -33,7 +33,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install pytest bandit flake8 requests jq
 
-      # --- Run Static and Test Checks ---
+      # --- Run Static & Test Checks ---
       - name: Run Pytest
         run: pytest -q > pytest_results.txt || true
 
@@ -50,11 +50,9 @@ jobs:
           tests_failed=$(grep -c "FAILED" pytest_results.txt || true)
           bandit_issues=$(grep -c "Issue:" bandit_report.txt || true)
           lint_issues=$(wc -l < lint_report.txt || echo 0)
-
           risk=$(( (bandit_issues * 5) + (tests_failed * 10) + (lint_issues * 2) ))
           [ $risk -gt 100 ] && risk=100
 
-          # Risk indicator emoji
           if [ "$risk" -le 30 ]; then
             indicator="🟢"
           elif [ "$risk" -le 70 ]; then
@@ -69,7 +67,7 @@ jobs:
           echo "bandit_issues=$bandit_issues" >> $GITHUB_OUTPUT
           echo "lint_issues=$lint_issues" >> $GITHUB_OUTPUT
 
-      # --- Fetch CodeQL and Dependabot Metrics ---
+      # --- Fetch CodeQL & Dependabot Metrics ---
       - name: Fetch CodeQL & Dependabot Metrics
         id: security
         env:
@@ -78,14 +76,13 @@ jobs:
         run: |
           codeql_count=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
             https://api.github.com/repos/$REPO/code-scanning/alerts?state=open | jq '. | length')
-
           dependabot_count=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
             https://api.github.com/repos/$REPO/dependabot/alerts?state=open | jq '. | length')
 
           echo "codeql_count=$codeql_count" >> $GITHUB_OUTPUT
           echo "dependabot_count=$dependabot_count" >> $GITHUB_OUTPUT
 
-      # --- Post PR Summary Comment (Keep last 5) ---
+      # --- Post PR Summary Comment (up to 5 per PR) ---
       - name: Post PR Summary Comment
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -96,7 +93,7 @@ jobs:
 
           summary=$(cat <<EOF
 ---
-**PR Summary (Commit:** \`${sha_short}\`)  
+### 🧾 PR Summary (Commit: \`${sha_short}\`)
 ⏱️ ${timestamp}
 
 **Title:** ${{ github.event.pull_request.title }}  
@@ -105,7 +102,7 @@ jobs:
 **Additions:** ${{ github.event.pull_request.additions }}  
 **Deletions:** ${{ github.event.pull_request.deletions }}
 
-### 🧪 Test & Security Metrics
+#### 🧪 Test & Security Metrics
 | Metric | Value |
 |--------|-------|
 | **${{ steps.metrics.outputs.indicator }} Risk Score** | ${{ steps.metrics.outputs.risk }} / 100 |
@@ -119,13 +116,12 @@ EOF
 )
 
           summary_escaped=$(echo "$summary" | jq -Rs .)
-
           curl -s -H "Authorization: token $GITHUB_TOKEN" \
             -X POST \
             -d "{\"body\": $summary_escaped}" \
             "https://api.github.com/repos/${{ github.repository }}/issues/$PR_NUMBER/comments"
 
-      # 🧹 Clean up old PR summaries (keep last 5)
+      # --- Keep only last 5 PR summaries ---
       - name: Clean up old PR summaries
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -151,11 +147,52 @@ EOF
             echo "No cleanup needed."
           fi
 
-      # --- Sticky Live Dashboard Link ---
+      # --- Save PR JSON Summary ---
+      - name: Save PR summary JSON
+        run: |
+          mkdir -p reports
+          cat <<EOF > reports/pr_summary_${{ github.event.pull_request.number }}.json
+          {
+            "id": "${{ github.event.pull_request.number }}",
+            "sha": "$(git rev-parse --short HEAD)",
+            "timestamp": "$(date -u "+%Y-%m-%d %H:%M:%S UTC")",
+            "title": "${{ github.event.pull_request.title }}",
+            "author": "${{ github.event.pull_request.user.login }}",
+            "additions": "${{ github.event.pull_request.additions }}",
+            "deletions": "${{ github.event.pull_request.deletions }}",
+            "changed_files": "${{ github.event.pull_request.changed_files }}",
+            "risk": "${{ steps.metrics.outputs.risk }}",
+            "bandit": "${{ steps.metrics.outputs.bandit_issues }}",
+            "lint": "${{ steps.metrics.outputs.lint_issues }}",
+            "tests_failed": "${{ steps.metrics.outputs.tests_failed }}",
+            "codeql": "${{ steps.security.outputs.codeql_count }}",
+            "dependabot": "${{ steps.security.outputs.dependabot_count }}"
+          }
+          EOF
+          cp reports/pr_summary_${{ github.event.pull_request.number }}.json reports/latest.json
+
+      # --- Append to dashboard.json (Keep full history) ---
+      - name: Update dashboard data
+        run: |
+          mkdir -p docs
+          if [ -f docs/dashboard.json ]; then
+            jq ". + [$(cat reports/latest.json)]" docs/dashboard.json > docs/tmp.json
+            mv docs/tmp.json docs/dashboard.json
+          else
+            echo "[ $(cat reports/latest.json) ]" > docs/dashboard.json
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/dashboard.json
+          git commit -m "Append PR #${{ github.event.pull_request.number }} data" || echo "No changes"
+          git push
+
+      # --- Sticky Dashboard Link Comment ---
       - name: Comment Dashboard Link
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           header: "📊 Live Dashboard"
           message: |
-            View full AI PR Dashboard here:  
+            View full PR Dashboard here:  
             👉 https://icryptologic.github.io/GITHUB-Native-PR-AI/

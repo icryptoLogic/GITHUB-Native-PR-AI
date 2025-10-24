@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>AI PR GITHUB Dashboard</title>
+  <title>AI PR Agent Dashboard</title>
   <style>
     :root {
       --bg: #0f172a;
@@ -11,77 +11,127 @@
       --accent: #38bdf8;
       --text: #f1f5f9;
     }
-    * { box-sizing: border-box; margin: 0; padding: 0; font-family: system-ui, sans-serif; }
-    body { background: var(--bg); color: var(--text); padding: 2rem; }
-    h1 { text-align: center; margin-bottom: 2rem; font-size: 2rem; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1.5rem; }
-    .card { background: var(--card); padding: 1.5rem; border-radius: 1rem; box-shadow: 0 4px 8px rgba(0,0,0,0.3); }
-    .card h2 { font-size: 1.25rem; margin-bottom: 0.75rem; color: var(--accent); }
-    .btn { display: inline-block; background: var(--accent); color: #000; padding: 0.5rem 1rem; border-radius: 0.5rem; text-decoration: none; margin-top: 0.75rem; font-weight: 600; }
-    footer { text-align: center; margin-top: 2rem; font-size: 0.9rem; opacity: 0.7; }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: system-ui, sans-serif;
+    }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      padding: 2rem;
+    }
+    h1 {
+      text-align: center;
+      margin-bottom: 2rem;
+      font-size: 2rem;
+    }
+    .pr-card {
+      background: var(--card);
+      padding: 1.5rem;
+      border-radius: 1rem;
+      margin-bottom: 2rem;
+      box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+    }
+    .commit {
+      background: #0b1220;
+      padding: 1rem;
+      margin-top: 1rem;
+      border-left: 3px solid var(--accent);
+      border-radius: 0.5rem;
+    }
+    .commit h3 {
+      margin-bottom: 0.5rem;
+      color: var(--accent);
+      font-size: 1rem;
+    }
+    .metrics {
+      margin-top: 0.5rem;
+    }
+    .metrics p {
+      margin: 0.25rem 0;
+      font-size: 0.9rem;
+    }
+    footer {
+      text-align: center;
+      margin-top: 2rem;
+      font-size: 0.9rem;
+      opacity: 0.7;
+    }
   </style>
 </head>
 <body>
-  <h1>AI PR GITHUB Dashboard</h1>
+  <h1>AI PR Agent Dashboard</h1>
 
-  <div class="grid">
-    <div class="card">
-      <h2>Latest PR Summary</h2>
-      <p id="prTitle">Loading...</p>
-      <p><strong>Author:</strong> <span id="prAuthor">Loading...</span></p>
-      <p><strong>Files/Changes:</strong> <span id="summary">Loading...</span></p>
-      <a href="#" id="prLink" class="btn" target="_blank">View PR</a>
-    </div>
-
-    <div class="card">
-      <h2>Metrics</h2>
-      <p><strong>Risk Score:</strong> <span id="riskScore">Loading...</span></p>
-      <p><strong>Bandit Issues:</strong> <span id="banditIssues">Loading...</span></p>
-      <p><strong>Tests Failed:</strong> <span id="testsFailed">Loading...</span></p>
-    </div>
-
-    <div class="card">
-      <h2>PR Status</h2>
-      <p><strong>Merged:</strong> <span id="mergedStatus">Pending/N/A</span></p>
-    </div>
-  </div>
+  <div id="dashboard"></div>
 
   <footer>
-    © 2025 AI-PR-GITHUB | Built with ♥ for GitHub Pages
+    © 2025 AI-PR-AGENT | Built with ♥ for GitHub Pages
   </footer>
 
   <script>
-    const baseUrl = "./dashboard.json";
-    const repoBaseUrl = "https://github.com/icryptologic/GITHUB-Native-PR-AI/pull/";
-
-    async function loadMetrics() {
+    async function loadDashboard() {
       try {
-        // Add a timestamp to bypass cache
-        const cacheBuster = `?v=${new Date().getTime()}`;
-        const response = await fetch(baseUrl + cacheBuster, { cache: "no-store" });
+        const res = await fetch("https://icryptologic.github.io/GITHUB-Native-PR-AI/docs/dashboard.json");
+        const data = await res.json();
 
-        if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
-        const dataArray = await response.json();
+        // Group entries by PR number
+        const grouped = {};
+        data.forEach(entry => {
+          if (!grouped[entry.id]) grouped[entry.id] = [];
+          grouped[entry.id].push(entry);
+        });
 
-        if (!Array.isArray(dataArray) || dataArray.length === 0) throw new Error("No PR data found");
+        // Sort commits by timestamp (newest first)
+        Object.keys(grouped).forEach(pr => {
+          grouped[pr].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+        });
 
-        const latestPR = dataArray[dataArray.length - 1];
+        const container = document.getElementById("dashboard");
+        container.innerHTML = "";
 
-        document.getElementById("prTitle").textContent = `#${latestPR.id} – ${latestPR.title}`;
-        document.getElementById("prAuthor").textContent = `@${latestPR.author}`;
-        document.getElementById("summary").textContent = `${latestPR.changed_files} files, +${latestPR.additions} / -${latestPR.deletions}`;
-        document.getElementById("prLink").href = `${repoBaseUrl}${latestPR.id}`;
-        document.getElementById("riskScore").textContent = `${latestPR.risk} / 100`;
-        document.getElementById("banditIssues").textContent = latestPR.bandit || 0;
-        document.getElementById("testsFailed").textContent = latestPR.tests_failed || 0;
-        document.getElementById("mergedStatus").textContent = latestPR.merged || "Pending/N/A";
+        // Render each PR
+        Object.entries(grouped).forEach(([pr, commits]) => {
+          const prCard = document.createElement("div");
+          prCard.className = "pr-card";
+          prCard.innerHTML = `
+            <h2>PR #${pr}: ${commits[0].title}</h2>
+            <p><strong>Author:</strong> @${commits[0].author}</p>
+            <p><strong>Total Commits:</strong> ${commits.length}</p>
+          `;
+
+          // Show up to 5 latest commits
+          commits.slice(0, 5).forEach(c => {
+            const commitDiv = document.createElement("div");
+            commitDiv.className = "commit";
+            commitDiv.innerHTML = `
+              <h3>Commit ${c.sha} — ${c.timestamp}</h3>
+              <div class="metrics">
+                <p><strong>Files Changed:</strong> ${c.changed_files}</p>
+                <p><strong>Additions:</strong> ${c.additions}</p>
+                <p><strong>Deletions:</strong> ${c.deletions}</p>
+                <p><strong>Risk Score:</strong> ${c.risk}/100</p>
+                <p><strong>Bandit Issues:</strong> ${c.bandit}</p>
+                <p><strong>Lint Issues:</strong> ${c.lint}</p>
+                <p><strong>Tests Failed:</strong> ${c.tests_failed}</p>
+                <p><strong>CodeQL Alerts:</strong> ${c.codeql}</p>
+                <p><strong>Dependabot Alerts:</strong> ${c.dependabot}</p>
+              </div>
+            `;
+            prCard.appendChild(commitDiv);
+          });
+
+          container.appendChild(prCard);
+        });
+
       } catch (err) {
-        console.error("Dashboard error:", err);
-        document.getElementById("prTitle").textContent = "⚠️ Error fetching data";
+        console.error("Error loading dashboard:", err);
+        document.getElementById("dashboard").innerHTML = "<p>⚠️ Failed to load dashboard data.</p>";
       }
     }
 
-    loadMetrics();
+    loadDashboard();
   </script>
 </body>
 </html>
