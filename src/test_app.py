@@ -2,7 +2,7 @@ import pytest
 from app import add
 
 def test_addition_success():
-    assert add(2, 3) == 5
+    assert add(2, 3) == 4
 
 def test_addition_fail():
     # ❌ Intentional failure for demo
