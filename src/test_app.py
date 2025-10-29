@@ -5,6 +5,6 @@ def test_addition_success():
     assert add(2, 3) == 5
 
 def test_addition_fail():
-    assert add(2, 2) == 4
-    #1:44am
+    assert add(2, 2) == 5
+    #1:46am
 
