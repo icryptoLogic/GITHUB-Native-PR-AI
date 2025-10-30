@@ -1,130 +1,144 @@
-name: 🧩 PR Summary Metrics (per commit, up to 5 + Live Dashboard)
+name: PR Dashboard
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, closed]
+
+permissions:
+  contents: write
+  pull-requests: write
+  security-events: read
 
 jobs:
-  pr_summary:
+  pr-dashboard:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
+      # --- Checkout the PR branch ---
+      - name: Checkout PR branch
         uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
         with:
-          python-version: '3.x'
+          fetch-depth: 0
+          ref: ${{ github.head_ref }}
+
+      # --- Setup Python ---
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
 
       - name: Install dependencies
         run: |
-          pip install pylint bandit jq
+          python -m pip install --upgrade pip
+          pip install pytest bandit flake8
 
-      - name: Run Metrics
+      # --- Run Static & Unit Tests ---
+      - name: Run Pytest
+        run: pytest -q > pytest_results.txt || true
+
+      - name: Run Bandit (security scan)
+        run: bandit -r src > bandit_report.txt || true
+
+      - name: Run Flake8 (lint check)
+        run: flake8 src > lint_report.txt || true
+
+      # --- Calculate Composite Risk Score ---
+      - name: Compute Metrics
         id: metrics
         run: |
-          echo "risk=85" >> $GITHUB_OUTPUT
-          echo "tests_failed=0" >> $GITHUB_OUTPUT
-          echo "bandit_issues=1" >> $GITHUB_OUTPUT
-          echo "lint_issues=2" >> $GITHUB_OUTPUT
+          tests_failed=$(grep -c "FAILED" pytest_results.txt || true)
+          bandit_issues=$(grep -c "Issue:" bandit_report.txt || true)
+          lint_issues=$(wc -l < lint_report.txt || echo 0)
+          risk=$(( (bandit_issues * 5) + (tests_failed * 10) + (lint_issues * 2) ))
+          [ $risk -gt 100 ] && risk=100
 
-      - name: Run Security Scan
-        id: security
-        run: |
-          echo "codeql_count=0" >> $GITHUB_OUTPUT
-          echo "dependabot_count=0" >> $GITHUB_OUTPUT
+          echo "risk=$risk" >> $GITHUB_OUTPUT
+          echo "tests_failed=$tests_failed" >> $GITHUB_OUTPUT
+          echo "bandit_issues=$bandit_issues" >> $GITHUB_OUTPUT
+          echo "lint_issues=$lint_issues" >> $GITHUB_OUTPUT
 
-      # 🧩 Export metrics to JSON for dashboard
-      - name: Export latest metrics to JSON
+      # --- Fetch CodeQL & Dependabot Alerts (optional visibility) ---
+      - name: Count CodeQL & Dependabot alerts
+        id: secdata
         run: |
-          mkdir -p pr_metrics
-          cat <<EOF > pr_metrics/dashboard.json
+          codeql_alerts=$(gh api repos/${{ github.repository }}/code-scanning/alerts --jq 'length' || echo 0)
+          dependabot_alerts=$(gh api repos/${{ github.repository }}/dependabot/alerts --jq 'length' || echo 0)
+          echo "codeql_alerts=$codeql_alerts" >> $GITHUB_OUTPUT
+          echo "dependabot_alerts=$dependabot_alerts" >> $GITHUB_OUTPUT
+
+      # --- Post PR Summary & Metrics as Sticky Comment ---
+      - name: Post PR Dashboard Comment
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: "📊 GitHub Native Dashboard"
+          message: |
+            ## 🧾 PR Summary
+            **Title:** ${{ github.event.pull_request.title }}  
+            **Author:** @${{ github.event.pull_request.user.login }}  
+            **Files Changed:** ${{ github.event.pull_request.changed_files }}  
+            **Additions:** ${{ github.event.pull_request.additions }}  
+            **Deletions:** ${{ github.event.pull_request.deletions }}
+
+            ## ⚙️ Metrics
+            | Metric | Value |
+            |--------|-------|
+            | ✅ **Risk Score** | ${{ steps.metrics.outputs.risk }} / 100 |
+            | 🧪 Tests Failed | ${{ steps.metrics.outputs.tests_failed }} |
+            | 🔒 Bandit Issues | ${{ steps.metrics.outputs.bandit_issues }} |
+            | 🧹 Lint Issues | ${{ steps.metrics.outputs.lint_issues }} |
+            | 🧩 CodeQL Alerts | ${{ steps.secdata.outputs.codeql_alerts }} |
+            | ⚠️ Dependabot Alerts | ${{ steps.secdata.outputs.dependabot_alerts }} |
+
+            ## 💡 Suggestions
+            ```text
+            $(cat lint_report.txt || echo "No lint issues 🎉")
+            ```
+
+            ---
+            🔄 *This dashboard auto-updates whenever the PR changes.*
+
+      # --- Save Summary JSON for Dashboard Aggregation ---
+      - name: Save PR summary JSON
+        run: |
+          mkdir -p reports
+          cat <<EOF > reports/latest.json
           {
-            "commit": "${{ github.event.after }}",
-            "timestamp": "$(date -u "+%Y-%m-%dT%H:%M:%SZ")",
-            "pr_number": "${{ github.event.pull_request.number }}",
+            "id": "${{ github.event.pull_request.number }}",
             "title": "${{ github.event.pull_request.title }}",
             "author": "${{ github.event.pull_request.user.login }}",
-            "risk_score": "${{ steps.metrics.outputs.risk }}",
+            "additions": "${{ github.event.pull_request.additions }}",
+            "deletions": "${{ github.event.pull_request.deletions }}",
+            "changed_files": "${{ github.event.pull_request.changed_files }}",
+            "risk": "${{ steps.metrics.outputs.risk }}",
+            "bandit": "${{ steps.metrics.outputs.bandit_issues }}",
+            "lint": "${{ steps.metrics.outputs.lint_issues }}",
             "tests_failed": "${{ steps.metrics.outputs.tests_failed }}",
-            "bandit_issues": "${{ steps.metrics.outputs.bandit_issues }}",
-            "lint_issues": "${{ steps.metrics.outputs.lint_issues }}",
-            "codeql_alerts": "${{ steps.security.outputs.codeql_count }}",
-            "dependabot_alerts": "${{ steps.security.outputs.dependabot_count }}"
+            "codeql": "${{ steps.secdata.outputs.codeql_alerts }}",
+            "dependabot": "${{ steps.secdata.outputs.dependabot_alerts }}",
+            "merged": "${{ github.event.pull_request.merged }}"
           }
           EOF
 
-      # 🧩 Post Commit-Specific PR Summary (adds new comment each push)
-      - name: Post Commit-Specific PR Summary
-        id: post_summary
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          COMMIT_SHA: ${{ github.event.after }}
+      # --- Switch to main and update dashboard data ---
+      - name: Checkout main branch
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Update dashboard.json
         run: |
-          # Create a formatted summary for this commit
-          escaped_body=$(jq -Rs . <<'EOF'
-          ---
-          ### 🧩 PR Summary — Commit `${{ env.COMMIT_SHA }}`
-          ⏱️ *$(date -u "+%Y-%m-%d %H:%M:%S UTC")*
-
-          **Title:** ${{ github.event.pull_request.title }}  
-          **Author:** @${{ github.event.pull_request.user.login }}  
-          **Files Changed:** ${{ github.event.pull_request.changed_files }}  
-          **Additions:** ${{ github.event.pull_request.additions }}  
-          **Deletions:** ${{ github.event.pull_request.deletions }}
-
-          #### 🧪 Test & Security Metrics
-          | Metric | Value |
-          |--------|-------|
-          | ✅ Risk Score | ${{ steps.metrics.outputs.risk }} / 100 |
-          | 🧩 Tests Failed | ${{ steps.metrics.outputs.tests_failed }} |
-          | 🔐 Bandit Issues | ${{ steps.metrics.outputs.bandit_issues }} |
-          | 🧹 Lint Warnings | ${{ steps.metrics.outputs.lint_issues }} |
-          | 🛡️ CodeQL Alerts | ${{ steps.security.outputs.codeql_count }} |
-          | 📦 Dependabot Alerts | ${{ steps.security.outputs.dependabot_count }} |
-
-          ---
-          📊 **[View Live Dashboard](https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/dashboard.html)**  
-          ---
-          EOF
-          )
-
-          # Post the summary as a new comment
-          curl -s -H "Authorization: token $GITHUB_TOKEN" \
-            -X POST \
-            -d "{\"body\": $escaped_body}" \
-            "https://api.github.com/repos/${{ github.repository }}/issues/$PR_NUMBER/comments"
-
-      # 🧹 Keep only latest 5 summaries (delete older ones)
-      - name: Clean up old PR summaries
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          comments=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-            "https://api.github.com/repos/${{ github.repository }}/issues/$PR_NUMBER/comments" | jq -r '.[].id')
-
-          total=$(echo "$comments" | wc -l)
-          if [ "$total" -gt 5 ]; then
-            remove=$(echo "$comments" | head -n $(($total - 5)))
-            for id in $remove; do
-              curl -s -H "Authorization: token $GITHUB_TOKEN" \
-                -X DELETE \
-                "https://api.github.com/repos/${{ github.repository }}/issues/comments/$id"
-            done
+          mkdir -p docs
+          if [ ! -f docs/dashboard.json ]; then
+            echo "[]" > docs/dashboard.json
           fi
+          jq --slurpfile new_entry reports/latest.json '. + $new_entry' docs/dashboard.json > docs/tmp.json
+          mv docs/tmp.json docs/dashboard.json
 
-      # 🚀 Deploy dashboard JSON to gh-pages branch
-      - name: Deploy dashboard to GitHub Pages
-        if: success()
+      # --- Commit and Push dashboard updates ---
+      - name: Commit & Push updated dashboard.json
         run: |
-          git config user.name "github-actions"
-          git config user.email "actions@github.com"
-          git fetch origin gh-pages || true
-          git checkout gh-pages || git checkout --orphan gh-pages
-          cp -r pr_metrics/dashboard.json .
-          git add dashboard.json
-          git commit -m "Update dashboard for PR #${{ github.event.pull_request.number }}"
-          git push origin gh-pages --force
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/dashboard.json
+          git commit -m "📊 Update dashboard for PR #${{ github.event.pull_request.number }}" || echo "No changes"
+          git push
