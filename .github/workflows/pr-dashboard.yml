@@ -1,4 +1,4 @@
-name: 🧩 PR Summary + Live Dashboard Update
+name: 🧩 PR Summary + Live Dashboard Update (with Live CodeQL & Dependabot)
 
 on:
   pull_request:
@@ -7,6 +7,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  security-events: read
 
 jobs:
   pr_summary_and_dashboard:
@@ -26,9 +27,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install pylint bandit jq
+          pip install pylint bandit jq requests
 
-      # 🧮 Run metrics
       - name: Run Analysis
         id: metrics
         run: |
@@ -36,10 +36,27 @@ jobs:
           echo "tests_failed=1" >> $GITHUB_OUTPUT
           echo "bandit_issues=3" >> $GITHUB_OUTPUT
           echo "lint_issues=2" >> $GITHUB_OUTPUT
-          echo "codeql_count=0" >> $GITHUB_OUTPUT
-          echo "dependabot_count=0" >> $GITHUB_OUTPUT
 
-      # 🧾 Save PR summary JSON for dashboard
+      # 🧠 Fetch live CodeQL and Dependabot alerts
+      - name: Fetch Security Alerts
+        id: security
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Get CodeQL alert count
+          CODEQL_COUNT=$(curl -s -H "Authorization: token $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/$REPO/code-scanning/alerts | jq '[.[] | select(.state=="open")] | length')
+
+          # Get Dependabot alert count
+          DEPENDABOT_COUNT=$(curl -s -H "Authorization: token $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/$REPO/dependabot/alerts | jq '[.[] | select(.state=="open")] | length')
+
+          echo "codeql_count=$CODEQL_COUNT" >> $GITHUB_OUTPUT
+          echo "dependabot_count=$DEPENDABOT_COUNT" >> $GITHUB_OUTPUT
+
       - name: Generate PR summary JSON
         run: |
           mkdir -p reports
@@ -53,7 +70,10 @@ jobs:
             "changed_files": "${{ github.event.pull_request.changed_files }}",
             "risk": "${{ steps.metrics.outputs.risk }}",
             "bandit": "${{ steps.metrics.outputs.bandit_issues }}",
+            "lint": "${{ steps.metrics.outputs.lint_issues }}",
             "tests_failed": "${{ steps.metrics.outputs.tests_failed }}",
+            "codeql": "${{ steps.security.outputs.codeql_count }}",
+            "dependabot": "${{ steps.security.outputs.dependabot_count }}",
             "merged": "${{ github.event.pull_request.merged }}"
           }
           EOF
@@ -64,7 +84,6 @@ jobs:
           name: pr-summary-json
           path: reports/latest.json
 
-      # 🧩 Post PR Summary comment (with dashboard link)
       - name: Post PR Summary
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -88,6 +107,9 @@ jobs:
           | ✅ Risk Score | ${{ steps.metrics.outputs.risk }} / 100 |
           | 🔐 Bandit Issues | ${{ steps.metrics.outputs.bandit_issues }} |
           | 🧩 Tests Failed | ${{ steps.metrics.outputs.tests_failed }} |
+          | ⚠️ Lint Warnings | ${{ steps.metrics.outputs.lint_issues }} |
+          | 🧠 CodeQL Alerts | ${{ steps.security.outputs.codeql_count }} |
+          | 🛡️ Dependabot Alerts | ${{ steps.security.outputs.dependabot_count }} |
 
           📊 **[View Full Dashboard →](${{ env.DASHBOARD_URL }})**
           ---
@@ -99,7 +121,6 @@ jobs:
             -d "{\"body\": $escaped_body}" \
             "https://api.github.com/repos/${{ github.repository }}/issues/$PR_NUMBER/comments"
 
-      # 🧠 Checkout main branch
       - name: Checkout main
         uses: actions/checkout@v4
         with:
@@ -111,7 +132,6 @@ jobs:
           name: pr-summary-json
           path: reports
 
-      # 🧠 Update dashboard data
       - name: Update dashboard.json
         run: |
           mkdir -p docs
