@@ -651,5 +651,17 @@
     "bandit": "3",
     "tests_failed": "1",
     "merged": "false"
+  },
+  {
+    "id": "86",
+    "title": "Update pr-dashboard.yml",
+    "author": "icryptoLogic",
+    "additions": "75",
+    "deletions": "40",
+    "changed_files": "2",
+    "risk": "25",
+    "bandit": "3",
+    "tests_failed": "1",
+    "merged": "false"
   }
 ]
