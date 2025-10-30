@@ -1,4 +1,4 @@
-name: 🧩 PR Summary + Live Dashboard Update
+name: 🧩 PR Summary + Live Dashboard Update (with CodeQL & Dependabot)
 
 on:
   pull_request:
@@ -7,6 +7,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  security-events: read  # 👈 Required for CodeQL alerts
 
 jobs:
   pr_summary_and_dashboard:
@@ -32,12 +33,18 @@ jobs:
       - name: Run Analysis
         id: metrics
         run: |
-          echo "risk=25" >> $GITHUB_OUTPUT
-          echo "tests_failed=1" >> $GITHUB_OUTPUT
-          echo "bandit_issues=3" >> $GITHUB_OUTPUT
+          echo "risk=85" >> $GITHUB_OUTPUT
+          echo "tests_failed=0" >> $GITHUB_OUTPUT
+          echo "bandit_issues=1" >> $GITHUB_OUTPUT
           echo "lint_issues=2" >> $GITHUB_OUTPUT
-          echo "codeql_count=0" >> $GITHUB_OUTPUT
-          echo "dependabot_count=0" >> $GITHUB_OUTPUT
+
+          # 🧠 Fetch CodeQL Alerts
+          CODEQL_COUNT=$(gh api repos/${{ github.repository }}/code-scanning/alerts --jq '. | length' || echo 0)
+          echo "codeql_count=$CODEQL_COUNT" >> $GITHUB_OUTPUT
+
+          # 🧠 Fetch Dependabot Alerts
+          DEPENDABOT_COUNT=$(gh api repos/${{ github.repository }}/dependabot/alerts --jq '. | length' || echo 0)
+          echo "dependabot_count=$DEPENDABOT_COUNT" >> $GITHUB_OUTPUT
 
       # 🧾 Save PR summary JSON for dashboard
       - name: Generate PR summary JSON
@@ -53,6 +60,9 @@ jobs:
             "changed_files": "${{ github.event.pull_request.changed_files }}",
             "risk": "${{ steps.metrics.outputs.risk }}",
             "bandit": "${{ steps.metrics.outputs.bandit_issues }}",
+            "lint": "${{ steps.metrics.outputs.lint_issues }}",
+            "codeql": "${{ steps.metrics.outputs.codeql_count }}",
+            "dependabot": "${{ steps.metrics.outputs.dependabot_count }}",
             "tests_failed": "${{ steps.metrics.outputs.tests_failed }}",
             "merged": "${{ github.event.pull_request.merged }}"
           }
@@ -86,8 +96,11 @@ jobs:
           | Metric | Value |
           |--------|-------|
           | ✅ Risk Score | ${{ steps.metrics.outputs.risk }} / 100 |
-          | 🔐 Bandit Issues | ${{ steps.metrics.outputs.bandit_issues }} |
           | 🧩 Tests Failed | ${{ steps.metrics.outputs.tests_failed }} |
+          | 🔐 Bandit Issues | ${{ steps.metrics.outputs.bandit_issues }} |
+          | ⚙️ Lint Warnings | ${{ steps.metrics.outputs.lint_issues }} |
+          | 🧠 CodeQL Alerts | ${{ steps.metrics.outputs.codeql_count }} |
+          | 🪲 Dependabot Alerts | ${{ steps.metrics.outputs.dependabot_count }} |
 
           📊 **[View Full Dashboard →](${{ env.DASHBOARD_URL }})**
           ---
