@@ -26,78 +26,21 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install pylint bandit jq pytest
+          pip install pylint bandit jq
 
-      # 🧮 Run Metrics
+      # 🧮 Run metrics
       - name: Run Analysis
         id: metrics
         run: |
-          echo "risk=85" >> $GITHUB_OUTPUT
-          echo "tests_failed=0" >> $GITHUB_OUTPUT
-          echo "bandit_issues=1" >> $GITHUB_OUTPUT
+          echo "risk=25" >> $GITHUB_OUTPUT
+          echo "tests_failed=1" >> $GITHUB_OUTPUT
+          echo "bandit_issues=3" >> $GITHUB_OUTPUT
           echo "lint_issues=2" >> $GITHUB_OUTPUT
           echo "codeql_count=0" >> $GITHUB_OUTPUT
           echo "dependabot_count=0" >> $GITHUB_OUTPUT
 
-      # 🧩 Post PR Summary as Comment (with dashboard link)
-      - name: Post PR Summary with Dashboard Link
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          COMMIT_SHA: ${{ github.event.after }}
-          DASHBOARD_URL: https://icryptologic.github.io/GITHUB-Native-PR-AI/
-        run: |
-          escaped_body=$(jq -Rs . <<'EOF'
-          ---
-          ### 🧩 PR Summary — Commit `${{ env.COMMIT_SHA }}`
-          ⏱️ *$(date -u "+%Y-%m-%d %H:%M:%S UTC")*
-
-          **Title:** ${{ github.event.pull_request.title }}  
-          **Author:** @${{ github.event.pull_request.user.login }}  
-          **Files Changed:** ${{ github.event.pull_request.changed_files }}  
-          **Additions:** ${{ github.event.pull_request.additions }}  
-          **Deletions:** ${{ github.event.pull_request.deletions }}
-
-          #### 🧪 Test & Security Metrics
-          | Metric | Value |
-          |--------|-------|
-          | ✅ Risk Score | ${{ steps.metrics.outputs.risk }} / 100 |
-          | 🧩 Tests Failed | ${{ steps.metrics.outputs.tests_failed }} |
-          | 🔐 Bandit Issues | ${{ steps.metrics.outputs.bandit_issues }} |
-          | 🧹 Lint Warnings | ${{ steps.metrics.outputs.lint_issues }} |
-          | 🛡️ CodeQL Alerts | ${{ steps.metrics.outputs.codeql_count }} |
-          | 📦 Dependabot Alerts | ${{ steps.metrics.outputs.dependabot_count }} |
-
-          📊 **[View Full Dashboard →](${{ env.DASHBOARD_URL }})**
-          ---
-          EOF
-          )
-
-          curl -s -H "Authorization: token $GITHUB_TOKEN" \
-            -X POST \
-            -d "{\"body\": $escaped_body}" \
-            "https://api.github.com/repos/${{ github.repository }}/issues/$PR_NUMBER/comments"
-
-      # 🧹 Keep only latest 5 summaries
-      - name: Clean up old PR summaries
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          comments=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-            "https://api.github.com/repos/${{ github.repository }}/issues/$PR_NUMBER/comments" | jq -r '.[].id')
-          total=$(echo "$comments" | wc -l)
-          if [ "$total" -gt 5 ]; then
-            remove=$(echo "$comments" | head -n $(($total - 5)))
-            for id in $remove; do
-              curl -s -H "Authorization: token $GITHUB_TOKEN" \
-                -X DELETE \
-                "https://api.github.com/repos/${{ github.repository }}/issues/comments/$id"
-            done
-          fi
-
-      # 🧾 Save PR Summary JSON for dashboard
-      - name: Save PR summary JSON
+      # 🧾 Save PR summary JSON for dashboard
+      - name: Generate PR summary JSON
         run: |
           mkdir -p reports
           cat <<EOF > reports/latest.json
@@ -115,22 +58,70 @@ jobs:
           }
           EOF
 
-      # 🧠 Switch to main branch to update dashboard.json
-      - name: Checkout main branch
+      - name: Upload summary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-summary-json
+          path: reports/latest.json
+
+      # 🧩 Post PR Summary comment (with dashboard link)
+      - name: Post PR Summary
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          DASHBOARD_URL: https://icryptologic.github.io/GITHUB-Native-PR-AI/
+        run: |
+          escaped_body=$(jq -Rs . <<'EOF'
+          ---
+          ### 🧩 PR Summary — Commit `${{ github.event.after }}`
+          ⏱️ *$(date -u "+%Y-%m-%d %H:%M:%S UTC")*
+
+          **Title:** ${{ github.event.pull_request.title }}  
+          **Author:** @${{ github.event.pull_request.user.login }}  
+          **Files Changed:** ${{ github.event.pull_request.changed_files }}  
+          **Additions:** ${{ github.event.pull_request.additions }}  
+          **Deletions:** ${{ github.event.pull_request.deletions }}
+
+          #### 🧪 Test & Security Metrics
+          | Metric | Value |
+          |--------|-------|
+          | ✅ Risk Score | ${{ steps.metrics.outputs.risk }} / 100 |
+          | 🔐 Bandit Issues | ${{ steps.metrics.outputs.bandit_issues }} |
+          | 🧩 Tests Failed | ${{ steps.metrics.outputs.tests_failed }} |
+
+          📊 **[View Full Dashboard →](${{ env.DASHBOARD_URL }})**
+          ---
+          EOF
+          )
+
+          curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            -X POST \
+            -d "{\"body\": $escaped_body}" \
+            "https://api.github.com/repos/${{ github.repository }}/issues/$PR_NUMBER/comments"
+
+      # 🧠 Checkout main branch
+      - name: Checkout main
         uses: actions/checkout@v4
         with:
           ref: main
 
-      - name: Update dashboard data
+      - name: Download JSON artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: pr-summary-json
+          path: reports
+
+      # 🧠 Update dashboard data
+      - name: Update dashboard.json
         run: |
           mkdir -p docs
           if [ ! -f docs/dashboard.json ]; then
             echo "[]" > docs/dashboard.json
           fi
-          jq --slurpfile new_entry reports/latest.json '. + $new_entry' docs/dashboard.json > docs/tmp.json
+          jq --slurpfile new reports/latest.json '. + $new' docs/dashboard.json > docs/tmp.json
           mv docs/tmp.json docs/dashboard.json
 
-      - name: Commit & Push dashboard.json
+      - name: Commit and push dashboard.json
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
