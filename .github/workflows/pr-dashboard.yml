@@ -1,16 +1,23 @@
-name: 🧩 PR Summary Metrics (per commit, up to 5)
+name: 🧩 PR Summary + Live Dashboard Update
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, closed]
+
+permissions:
+  contents: write
+  pull-requests: write
 
 jobs:
-  pr_summary:
+  pr_summary_and_dashboard:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
+      - name: Checkout PR branch
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.head_ref }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -21,32 +28,52 @@ jobs:
         run: |
           pip install pylint bandit jq
 
-      - name: Run Metrics
+      # 🧮 Run metrics
+      - name: Run Analysis
         id: metrics
         run: |
-          echo "risk=85" >> $GITHUB_OUTPUT
-          echo "tests_failed=0" >> $GITHUB_OUTPUT
-          echo "bandit_issues=1" >> $GITHUB_OUTPUT
+          echo "risk=25" >> $GITHUB_OUTPUT
+          echo "tests_failed=1" >> $GITHUB_OUTPUT
+          echo "bandit_issues=3" >> $GITHUB_OUTPUT
           echo "lint_issues=2" >> $GITHUB_OUTPUT
-
-      - name: Run Security Scan
-        id: security
-        run: |
           echo "codeql_count=0" >> $GITHUB_OUTPUT
           echo "dependabot_count=0" >> $GITHUB_OUTPUT
 
-      # 🧩 Post Commit-Specific PR Summary (adds new comment each push)
-      - name: Post Commit-Specific PR Summary
-        id: post_summary
+      # 🧾 Save PR summary JSON for dashboard
+      - name: Generate PR summary JSON
+        run: |
+          mkdir -p reports
+          cat <<EOF > reports/latest.json
+          {
+            "id": "${{ github.event.pull_request.number }}",
+            "title": "${{ github.event.pull_request.title }}",
+            "author": "${{ github.event.pull_request.user.login }}",
+            "additions": "${{ github.event.pull_request.additions }}",
+            "deletions": "${{ github.event.pull_request.deletions }}",
+            "changed_files": "${{ github.event.pull_request.changed_files }}",
+            "risk": "${{ steps.metrics.outputs.risk }}",
+            "bandit": "${{ steps.metrics.outputs.bandit_issues }}",
+            "tests_failed": "${{ steps.metrics.outputs.tests_failed }}",
+            "merged": "${{ github.event.pull_request.merged }}"
+          }
+          EOF
+
+      - name: Upload summary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-summary-json
+          path: reports/latest.json
+
+      # 🧩 Post PR Summary comment (with dashboard link)
+      - name: Post PR Summary
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          COMMIT_SHA: ${{ github.event.after }}
+          DASHBOARD_URL: https://icryptologic.github.io/GITHUB-Native-PR-AI/
         run: |
-          # Create a formatted summary for this commit
           escaped_body=$(jq -Rs . <<'EOF'
           ---
-          ### 🧩 PR Summary — Commit `${{ env.COMMIT_SHA }}`  
+          ### 🧩 PR Summary — Commit `${{ github.event.after }}`
           ⏱️ *$(date -u "+%Y-%m-%d %H:%M:%S UTC")*
 
           **Title:** ${{ github.event.pull_request.title }}  
@@ -59,37 +86,45 @@ jobs:
           | Metric | Value |
           |--------|-------|
           | ✅ Risk Score | ${{ steps.metrics.outputs.risk }} / 100 |
-          | 🧩 Tests Failed | ${{ steps.metrics.outputs.tests_failed }} |
           | 🔐 Bandit Issues | ${{ steps.metrics.outputs.bandit_issues }} |
-          | 🧹 Lint Warnings | ${{ steps.metrics.outputs.lint_issues }} |
-          | 🛡️ CodeQL Alerts | ${{ steps.security.outputs.codeql_count }} |
-          | 📦 Dependabot Alerts | ${{ steps.security.outputs.dependabot_count }} |
+          | 🧩 Tests Failed | ${{ steps.metrics.outputs.tests_failed }} |
 
+          📊 **[View Full Dashboard →](${{ env.DASHBOARD_URL }})**
           ---
           EOF
           )
 
-          # Post the summary as a new comment
           curl -s -H "Authorization: token $GITHUB_TOKEN" \
             -X POST \
             -d "{\"body\": $escaped_body}" \
             "https://api.github.com/repos/${{ github.repository }}/issues/$PR_NUMBER/comments"
 
-      # 🧹 Keep only latest 5 summaries (delete older ones)
-      - name: Clean up old PR summaries
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          comments=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-            "https://api.github.com/repos/${{ github.repository }}/issues/$PR_NUMBER/comments" | jq -r '.[].id')
+      # 🧠 Checkout main branch
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
 
-          total=$(echo "$comments" | wc -l)
-          if [ "$total" -gt 5 ]; then
-            remove=$(echo "$comments" | head -n $(($total - 5)))
-            for id in $remove; do
-              curl -s -H "Authorization: token $GITHUB_TOKEN" \
-                -X DELETE \
-                "https://api.github.com/repos/${{ github.repository }}/issues/comments/$id"
-            done
+      - name: Download JSON artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: pr-summary-json
+          path: reports
+
+      # 🧠 Update dashboard data
+      - name: Update dashboard.json
+        run: |
+          mkdir -p docs
+          if [ ! -f docs/dashboard.json ]; then
+            echo "[]" > docs/dashboard.json
           fi
+          jq --slurpfile new reports/latest.json '. + $new' docs/dashboard.json > docs/tmp.json
+          mv docs/tmp.json docs/dashboard.json
+
+      - name: Commit and push dashboard.json
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/dashboard.json
+          git commit -m "🔄 Update dashboard for PR #${{ github.event.pull_request.number }}" || echo "No changes to commit"
+          git push
