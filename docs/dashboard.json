@@ -751,5 +751,20 @@
     "dependabot": "0",
     "tests_failed": "0",
     "merged": "false"
+  },
+  {
+    "id": "89",
+    "title": "Update pr-dashboard.yml",
+    "author": "icryptoLogic",
+    "additions": "23",
+    "deletions": "9",
+    "changed_files": "3",
+    "risk": "85",
+    "bandit": "1",
+    "lint": "2",
+    "codeql": "0",
+    "dependabot": "0",
+    "tests_failed": "0",
+    "merged": "false"
   }
 ]
