@@ -1,8 +1,9 @@
-name: 🧩 PR Summary + Live Dashboard Update (with Live CodeQL & Dependabot)
+name: PR Summary + Live Dashboard Update (with Live CodeQL & Dependabot)
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, closed]
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -14,11 +15,13 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Set up job
+        run: echo "🚀 Starting PR summary and dashboard update..."
+
       - name: Checkout PR branch
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ github.head_ref }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -26,101 +29,90 @@ jobs:
           python-version: '3.x'
 
       - name: Install dependencies
-        run: |
-          pip install pylint bandit jq requests
+        run: pip install requests pyyaml
 
       - name: Run Analysis
-        id: metrics
-        run: |
-          echo "risk=25" >> $GITHUB_OUTPUT
-          echo "tests_failed=1" >> $GITHUB_OUTPUT
-          echo "bandit_issues=3" >> $GITHUB_OUTPUT
-          echo "lint_issues=2" >> $GITHUB_OUTPUT
+        run: echo "🔍 Running analysis for PR..."
 
-      # 🧠 Fetch live CodeQL and Dependabot alerts
+      # 🧩 Fetch Security Alerts (CodeQL + Dependabot)
       - name: Fetch Security Alerts
-        id: security
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
         run: |
+          echo "🔐 Fetching CodeQL and Dependabot alerts..."
+
           # Get CodeQL alert count
-          CODEQL_COUNT=$(curl -s -H "Authorization: token $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            https://api.github.com/repos/$REPO/code-scanning/alerts | jq '[.[] | select(.state=="open")] | length')
+          codeql_response=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/code-scanning/alerts")
+
+          if echo "$codeql_response" | jq -e 'type=="array"' > /dev/null; then
+            codeql_alerts=$(echo "$codeql_response" | jq '[.[] | select(.state=="open")] | length')
+          else
+            echo "⚠️ No CodeQL alerts found or API returned a message."
+            codeql_alerts=0
+          fi
 
           # Get Dependabot alert count
-          DEPENDABOT_COUNT=$(curl -s -H "Authorization: token $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            https://api.github.com/repos/$REPO/dependabot/alerts | jq '[.[] | select(.state=="open")] | length')
+          dep_response=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/dependabot/alerts")
 
-          echo "codeql_count=$CODEQL_COUNT" >> $GITHUB_OUTPUT
-          echo "dependabot_count=$DEPENDABOT_COUNT" >> $GITHUB_OUTPUT
+          if echo "$dep_response" | jq -e 'type=="array"' > /dev/null; then
+            dependabot_alerts=$(echo "$dep_response" | jq '[.[] | select(.state=="open")] | length')
+          else
+            echo "⚠️ No Dependabot alerts found or API returned a message."
+            dependabot_alerts=0
+          fi
+
+          echo "CodeQL Alerts: $codeql_alerts"
+          echo "Dependabot Alerts: $dependabot_alerts"
+
+          echo "codeql_alerts=$codeql_alerts" >> $GITHUB_ENV
+          echo "dependabot_alerts=$dependabot_alerts" >> $GITHUB_ENV
 
       - name: Generate PR summary JSON
+        id: pr_summary
         run: |
-          mkdir -p reports
-          cat <<EOF > reports/latest.json
-          {
-            "id": "${{ github.event.pull_request.number }}",
-            "title": "${{ github.event.pull_request.title }}",
-            "author": "${{ github.event.pull_request.user.login }}",
-            "additions": "${{ github.event.pull_request.additions }}",
-            "deletions": "${{ github.event.pull_request.deletions }}",
-            "changed_files": "${{ github.event.pull_request.changed_files }}",
-            "risk": "${{ steps.metrics.outputs.risk }}",
-            "bandit": "${{ steps.metrics.outputs.bandit_issues }}",
-            "lint": "${{ steps.metrics.outputs.lint_issues }}",
-            "tests_failed": "${{ steps.metrics.outputs.tests_failed }}",
-            "codeql": "${{ steps.security.outputs.codeql_count }}",
-            "dependabot": "${{ steps.security.outputs.dependabot_count }}",
-            "merged": "${{ github.event.pull_request.merged }}"
-          }
-          EOF
+          echo "📊 Generating PR summary JSON..."
+          jq -n \
+          --arg pr_number "${{ github.event.pull_request.number }}" \
+          --arg pr_title "${{ github.event.pull_request.title }}" \
+          --arg pr_author "${{ github.event.pull_request.user.login }}" \
+          --arg pr_state "${{ github.event.pull_request.state }}" \
+          --arg pr_created "${{ github.event.pull_request.created_at }}" \
+          --arg codeql "${{ env.codeql_alerts }}" \
+          --arg depbot "${{ env.dependabot_alerts }}" \
+          '{
+            pr_number: $pr_number,
+            title: $pr_title,
+            author: $pr_author,
+            state: $pr_state,
+            created_at: $pr_created,
+            codeql_alerts: $codeql,
+            dependabot_alerts: $depbot
+          }' > pr_summary.json
+
+          cat pr_summary.json
 
       - name: Upload summary artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pr-summary-json
-          path: reports/latest.json
+          name: pr_summary
+          path: pr_summary.json
 
+      # 🧠 Post Summary Comment on PR
       - name: Post PR Summary
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          DASHBOARD_URL: https://icryptologic.github.io/GITHUB-Native-PR-AI/
-        run: |
-          escaped_body=$(jq -Rs . <<'EOF'
-          ---
-          ### 🧩 PR Summary — Commit `${{ github.event.after }}`
-          ⏱️ *$(date -u "+%Y-%m-%d %H:%M:%S UTC")*
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          message: |
+            🧾 **Live PR Summary**
+            | Metric | Value |
+            |---------|-------|
+            | PR Number | #${{ github.event.pull_request.number }} |
+            | Author | ${{ github.event.pull_request.user.login }} |
+            | State | ${{ github.event.pull_request.state }} |
+            | Created At | ${{ github.event.pull_request.created_at }} |
+            | **CodeQL Alerts** | ${{ env.codeql_alerts }} |
+            | **Dependabot Alerts** | ${{ env.dependabot_alerts }} |
 
-          **Title:** ${{ github.event.pull_request.title }}  
-          **Author:** @${{ github.event.pull_request.user.login }}  
-          **Files Changed:** ${{ github.event.pull_request.changed_files }}  
-          **Additions:** ${{ github.event.pull_request.additions }}  
-          **Deletions:** ${{ github.event.pull_request.deletions }}
-
-          #### 🧪 Test & Security Metrics
-          | Metric | Value |
-          |--------|-------|
-          | ✅ Risk Score | ${{ steps.metrics.outputs.risk }} / 100 |
-          | 🔐 Bandit Issues | ${{ steps.metrics.outputs.bandit_issues }} |
-          | 🧩 Tests Failed | ${{ steps.metrics.outputs.tests_failed }} |
-          | ⚠️ Lint Warnings | ${{ steps.metrics.outputs.lint_issues }} |
-          | 🧠 CodeQL Alerts | ${{ steps.security.outputs.codeql_count }} |
-          | 🛡️ Dependabot Alerts | ${{ steps.security.outputs.dependabot_count }} |
-
-          📊 **[View Full Dashboard →](${{ env.DASHBOARD_URL }})**
-          ---
-          EOF
-          )
-
-          curl -s -H "Authorization: token $GITHUB_TOKEN" \
-            -X POST \
-            -d "{\"body\": $escaped_body}" \
-            "https://api.github.com/repos/${{ github.repository }}/issues/$PR_NUMBER/comments"
-
+      # 🧩 Update dashboard JSON in main branch
       - name: Checkout main
         uses: actions/checkout@v4
         with:
@@ -129,22 +121,23 @@ jobs:
       - name: Download JSON artifact
         uses: actions/download-artifact@v4
         with:
-          name: pr-summary-json
-          path: reports
+          name: pr_summary
 
       - name: Update dashboard.json
         run: |
-          mkdir -p docs
-          if [ ! -f docs/dashboard.json ]; then
-            echo "[]" > docs/dashboard.json
-          fi
-          jq --slurpfile new reports/latest.json '. + $new' docs/dashboard.json > docs/tmp.json
-          mv docs/tmp.json docs/dashboard.json
+          echo "🧠 Updating dashboard.json with latest PR metrics..."
+          jq --slurpfile new pr_summary.json '
+            (.[0] + $new) as $combined |
+            if ($combined | length) > 0 then $combined else . end
+          ' dashboard.json > tmp.json && mv tmp.json dashboard.json
 
       - name: Commit and push dashboard.json
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add docs/dashboard.json
-          git commit -m "🔄 Update dashboard for PR #${{ github.event.pull_request.number }}" || echo "No changes to commit"
-          git push
+          git add dashboard.json
+          git commit -m "🔄 Update PR Dashboard with CodeQL & Dependabot metrics"
+          git push origin main
+
+      - name: Complete job
+        run: echo "✅ PR Summary + Dashboard update completed successfully!"
