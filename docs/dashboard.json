@@ -788,5 +788,20 @@
     "dependabot": "0",
     "tests_failed": "0",
     "merged": "true"
+  },
+  {
+    "id": "90",
+    "title": "Update test_app.py",
+    "author": "icryptoLogic",
+    "additions": "1",
+    "deletions": "1",
+    "changed_files": "1",
+    "risk": "85",
+    "bandit": "1",
+    "lint": "2",
+    "codeql": "0",
+    "dependabot": "0",
+    "tests_failed": "0",
+    "merged": "false"
   }
 ]
