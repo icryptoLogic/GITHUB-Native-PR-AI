@@ -1,0 +1,13 @@
+{
+  "commit": "",
+  "timestamp": "2025-10-30T08:41:45Z",
+  "pr_number": "86",
+  "title": "Update pr-dashboard.yml",
+  "author": "icryptoLogic",
+  "risk_score": "85",
+  "tests_failed": "0",
+  "bandit_issues": "1",
+  "lint_issues": "2",
+  "codeql_alerts": "0",
+  "dependabot_alerts": "0"
+}

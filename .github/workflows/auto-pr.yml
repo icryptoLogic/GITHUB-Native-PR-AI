@@ -1,0 +1,47 @@
+name: Auto PR Creation
+
+on:
+  push:
+    branches-ignore:
+      - "refs/pull/*"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-pr:
+    runs-on: ubuntu-latest
+    if: github.actor != 'github-actions[bot]'
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Create branch for PR
+        id: branch
+        run: |
+          ts=$(date +%s)
+          branch_name="auto-pr-$ts"
+          git checkout -b "$branch_name"
+          echo "branch_name=$branch_name" >> $GITHUB_OUTPUT
+
+      - name: Push new branch
+        run: git push origin "${{ steps.branch.outputs.branch_name }}"
+
+      - name: Auto Create PR
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          title: "Auto PR for ${GITHUB_REF_NAME} updates"
+          body: "This PR was automatically created from branch: ${GITHUB_REF_NAME}"
+          base: main
+          branch: ${{ steps.branch.outputs.branch_name }}
+          draft: false

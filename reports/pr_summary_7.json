@@ -1,0 +1,11 @@
+{
+  "id": "7",
+  "title": "Update pr-dashboard.yml",
+  "author": "icryptoLogic",
+  "additions": "12",
+  "deletions": "28",
+  "changed_files": "1",
+  "risk": "25",
+  "bandit": "3",
+  "tests_failed": "1"
+}

@@ -1,0 +1,11 @@
+{
+  "id": "24",
+  "title": "Update index.html",
+  "author": "icryptoLogic",
+  "additions": "39",
+  "deletions": "11",
+  "changed_files": "1",
+  "risk": "25",
+  "bandit": "3",
+  "tests_failed": "1"
+}
